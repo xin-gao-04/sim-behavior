@@ -13,12 +13,12 @@
 
 ```mermaid
 graph TB
-    L1["Layer 1 — Simulation Host<br/>SimHostApp<br/><i>进程生命周期 / 配置加载 / 模块装配 / 时钟驱动</i>"]
-    L2["Layer 2 — Behavior Runtime<br/>BtRuntimeImpl<br/><i>BT 工厂 / 节点注册 / 树实例管理 / TickScheduler / wakeup队列</i>"]
-    L3["Layer 3 — Async Orchestration<br/>UvwEventLoopRuntime<br/><i>事件循环 / 定时器 / 跨线程 PostToLoop / WakeupBridge</i>"]
-    L4["Layer 4 — Compute Execution<br/>TbbJobExecutor<br/><i>high/normal/low 三个 task_arena / DefaultResultMailbox</i>"]
-    L5["Layer 5 — Domain State<br/>EntityContext / GroupContext / WorldSnapshot<br/><i>实体私有态 / 编队共享态 / 全局只读态势</i>"]
-    L6["Layer 6 — Integration Adapters<br/>CommandBus / IBusAdapter<br/><i>命令出站 / 仿真总线接入 / 传感器适配</i>"]
+    L1["Layer 1 — Simulation Host<br/>SimHostApp<br/>进程生命周期 / 配置加载 / 模块装配 / 时钟驱动"]
+    L2["Layer 2 — Behavior Runtime<br/>BtRuntimeImpl<br/>BT 工厂 / 节点注册 / 树实例管理 / TickScheduler / wakeup队列"]
+    L3["Layer 3 — Async Orchestration<br/>UvwEventLoopRuntime<br/>事件循环 / 定时器 / 跨线程 PostToLoop / WakeupBridge"]
+    L4["Layer 4 — Compute Execution<br/>TbbJobExecutor<br/>high/normal/low 三个 task_arena / DefaultResultMailbox"]
+    L5["Layer 5 — Domain State<br/>EntityContext / GroupContext / WorldSnapshot<br/>实体私有态 / 编队共享态 / 全局只读态势"]
+    L6["Layer 6 — Integration Adapters<br/>CommandBus / IBusAdapter<br/>命令出站 / 仿真总线接入 / 传感器适配"]
 
     L1 -->|"装配 & 驱动"| L2
     L2 -->|"StartTimeout / EmitWakeup"| L3
@@ -136,7 +136,7 @@ classDiagram
     IAsyncActionContext --> IJobExecutor : SubmitCpuJob
     IAsyncActionContext --> IResultMailbox : PeekResult/ConsumeResult
     IAsyncActionContext --> IEventLoopRuntime : StartTimeout
-    IAsyncActionContext --> IBtRuntime : EmitWakeup→RequestWakeup
+    IAsyncActionContext --> IBtRuntime : EmitWakeup to RequestWakeup
     AsyncActionBase --> IAsyncActionContext : 唯一依赖
 ```
 
@@ -199,11 +199,11 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> RUNNING : onStart() → OnStart()\nSubmitCpuJob + StartTimeout
-    RUNNING --> SUCCESS : onRunning() → PeekResult 就绪 + succeeded
-    RUNNING --> FAILURE : onRunning() → PeekResult 就绪 + !succeeded
-    RUNNING --> FAILURE : onRunning() → IsTimedOut()\n自动调 OnHalted()
-    RUNNING --> IDLE : onHalted() → OnHalted()\nCancelJob + CancelTimeout
+    IDLE --> RUNNING : OnStart - SubmitCpuJob + StartTimeout
+    RUNNING --> SUCCESS : OnRunning - PeekResult succeeded
+    RUNNING --> FAILURE : OnRunning - PeekResult failed
+    RUNNING --> FAILURE : OnRunning - IsTimedOut, calls OnHalted
+    RUNNING --> IDLE : OnHalted - CancelJob + CancelTimeout
     SUCCESS --> [*]
     FAILURE --> [*]
 ```
@@ -274,8 +274,8 @@ flowchart TD
     F -->|异步首次| H
     F -->|异步轮询| I
     H --> J --> K --> L --> M --> D
-    I -->|结果未就绪| E
-    I -->|结果就绪| G
+    I -->|"结果未就绪"| E
+    I -->|"结果就绪"| G
 ```
 
 ---
@@ -350,8 +350,8 @@ sim-behavior/
 | oneTBB | v2022.0.0 | `TBB::tbb` | [GitHub](https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.0.0.zip) |
 | libuv | v1.48.0 | `uv::uv` | [GitHub](https://github.com/libuv/libuv/archive/refs/tags/v1.48.0.zip) |
 | uvw | v3.4.0_libuv_v1.48 | `uvw::uvw` | [GitHub](https://github.com/skypjack/uvw/archive/refs/tags/v3.4.0_libuv_v1.48.zip) |
-| BehaviorTree.CPP | 4.6.2 | `BT::behaviortree_cpp` | [GitHub](https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.6.2.zip) |
-| GoogleTest | v1.14.0 | `GTest::gtest` | [GitHub](https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip) |
+| BehaviorTree.CPP | 4.9.0 | `BT::behaviortree_cpp` | [GitHub](https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.9.0.zip) |
+| GoogleTest | v1.16.0 | `GTest::gtest` | [GitHub](https://github.com/google/googletest/archive/refs/tags/v1.16.0.zip) |
 
 CMake 最低版本：**3.24** | C++ 标准：**17**
 
