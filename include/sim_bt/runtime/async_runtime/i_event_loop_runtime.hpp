@@ -6,6 +6,7 @@
 #include <string>
 
 #include "sim_bt/common/result.hpp"
+#include "sim_bt/common/types.hpp"
 
 namespace sim_bt {
 

@@ -18,7 +18,7 @@ TbbJobExecutor::TbbJobExecutor(ArenaConfig config)
   arena_low_.initialize(config.low_concurrency);
 }
 
-TbbJobExecutor::~TbbJobExecutor() {
+TbbJobExecutor::~TbbJobExecutor() noexcept {
   Shutdown();
 }
 

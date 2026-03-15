@@ -65,14 +65,14 @@ download_zip \
   "https://github.com/skypjack/uvw/archive/refs/tags/v3.4.0_libuv_v1.48.zip" \
   "${THIRD_PARTY}/uvw.zip"
 
-# 4. BehaviorTree.CPP 4.6.2
+# 4. BehaviorTree.CPP 4.9.0
 download_zip \
-  "https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.6.2.zip" \
+  "https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.9.0.zip" \
   "${THIRD_PARTY}/BehaviorTree.CPP.zip"
 
-# 5. GoogleTest v1.14.0
+# 5. GoogleTest v1.16.0
 download_zip \
-  "https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip" \
+  "https://github.com/google/googletest/archive/refs/tags/v1.16.0.zip" \
   "${THIRD_PARTY}/googletest.zip"
 
 # -----------------------------------------------------------------------------

@@ -20,3 +20,4 @@ target_link_libraries(sim_host
 )
 
 target_compile_features(sim_host PRIVATE cxx_std_17)
+target_link_libraries(sim_host PRIVATE simbehavior_compile_warnings)

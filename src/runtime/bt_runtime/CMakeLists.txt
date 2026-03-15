@@ -19,3 +19,4 @@ target_link_libraries(simbehavior_bt_runtime
 )
 
 target_compile_features(simbehavior_bt_runtime PUBLIC cxx_std_17)
+target_link_libraries(simbehavior_bt_runtime PRIVATE simbehavior_compile_warnings)

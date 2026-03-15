@@ -38,7 +38,7 @@ struct ArenaConfig {
 class TbbJobExecutor : public IJobExecutor {
  public:
   explicit TbbJobExecutor(ArenaConfig config = {});
-  ~TbbJobExecutor() override;
+  ~TbbJobExecutor() noexcept override;
 
   // 注入 wakeup 回调（应在 Mailbox 使用前设置，通常由 EventLoopRuntime 注入）
   void SetWakeupCallback(VoidCallback cb);

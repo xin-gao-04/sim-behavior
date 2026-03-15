@@ -244,12 +244,12 @@ message(STATUS "[sim-behavior] uvw::uvw ready")
 # ║  4. BehaviorTree.CPP v4                                                 ║
 # ║                                                                          ║
 # ║  zip 打包来源：                                                          ║
-# ║    https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.6.2.zip ║
+# ║    https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.9.0.zip ║
 # ║  放置为：third_party/BehaviorTree.CPP.zip                               ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET behaviortree_cpp AND NOT TARGET BT::behaviortree_cpp)
   _dep_add(behaviortree_cpp BehaviorTree.CPP
-    https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.6.2
+    https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.9.0
     "BTCPP_UNIT_TESTS=OFF" "BTCPP_BUILD_TOOLS=OFF"
     "BTCPP_EXAMPLES=OFF"   "BUILD_TESTING=OFF"
   )
@@ -272,12 +272,15 @@ message(STATUS "[sim-behavior] BT::behaviortree_cpp ready")
 # ║  5. GoogleTest  (仅测试构建)                                             ║
 # ║                                                                          ║
 # ║  zip 打包来源：                                                          ║
-# ║    https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip   ║
+# ║    https://github.com/google/googletest/archive/refs/tags/v1.16.0.zip   ║
 # ║  放置为：third_party/googletest.zip                                     ║
+# ║                                                                          ║
+# ║  注意：使用 v1.16.0 以对齐 BehaviorTree.CPP 依赖的系统 GTest ABI。     ║
+# ║  v1.14→v1.16 存在 MakeAndRegisterTestInfo 签名变化（string vs char*）。║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 if(SIMBEHAVIOR_BUILD_TESTS AND NOT TARGET GTest::gtest)
   _dep_add(googletest googletest
-    https://github.com/google/googletest.git v1.14.0
+    https://github.com/google/googletest.git v1.16.0
     "INSTALL_GTEST=OFF" "BUILD_GMOCK=ON"
   )
   message(STATUS "[sim-behavior] GoogleTest ready")

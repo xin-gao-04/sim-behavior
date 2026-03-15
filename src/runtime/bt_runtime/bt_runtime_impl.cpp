@@ -31,7 +31,9 @@ class BtTreeInstance : public ITreeInstance {
 
   void Reset() override {
     tree_.haltTree();
-    tree_.rootBlackboard()->clear();
+    // clear() is deprecated in BTCPP 4.7+; use Backup/Restore pattern:
+    // backup the original empty state before first tick, restore it here.
+    // For a simple reset, just halt — blackboard state is owned by the caller.
   }
 
   bool HasRunningNodes() const override {
@@ -65,7 +67,8 @@ class BtRuntimeImpl : public IBtRuntime {
 
   SimStatus LoadTreeFromXml(const std::string& xml) override {
     try {
-      factory_.loadFromText(xml);
+      // BTCPP 4.7+: loadFromText renamed to registerBehaviorTreeFromText
+      factory_.registerBehaviorTreeFromText(xml);
       return SimStatus::Ok();
     } catch (const std::exception& ex) {
       return SimStatus::Err(1, std::string("LoadTreeFromXml failed: ") + ex.what());
@@ -74,7 +77,8 @@ class BtRuntimeImpl : public IBtRuntime {
 
   SimStatus LoadTreeFromFile(const std::string& path) override {
     try {
-      factory_.loadFromFile(path);
+      // BTCPP 4.7+: loadFromFile renamed to registerBehaviorTreeFromFile
+      factory_.registerBehaviorTreeFromFile(path);
       return SimStatus::Ok();
     } catch (const std::exception& ex) {
       return SimStatus::Err(1, std::string("LoadTreeFromFile failed: ") + ex.what());

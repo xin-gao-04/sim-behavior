@@ -18,3 +18,4 @@ target_link_libraries(simbehavior_domain
 )
 
 target_compile_features(simbehavior_domain PUBLIC cxx_std_17)
+target_link_libraries(simbehavior_domain PRIVATE simbehavior_compile_warnings)

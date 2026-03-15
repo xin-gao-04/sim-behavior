@@ -9,6 +9,10 @@ option(SIMBEHAVIOR_BUILD_SIM_HOST  "Build sim_host executable" ON)
 # ── 编译标志 ──────────────────────────────────────────────────────────────────
 include(cmake/CompilerFlags.cmake)
 
+# ── 禁止三方子项目自动构建其测试（TBB / libuv / BTCPP 等均遵守 BUILD_TESTING）
+# 我们通过 SIMBEHAVIOR_BUILD_TESTS 控制自己的测试，独立于此变量
+set(BUILD_TESTING OFF CACHE BOOL "Disable testing in all subprojects" FORCE)
+
 # ── 三方依赖 ──────────────────────────────────────────────────────────────────
 include(cmake/Dependencies.cmake)
 

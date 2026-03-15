@@ -24,6 +24,7 @@ target_link_libraries(sim_behavior_tests
     simbehavior_adapters
     GTest::gtest
     GTest::gtest_main
+    simbehavior_compile_warnings
 )
 
 include(GoogleTest)

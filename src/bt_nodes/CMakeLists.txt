@@ -22,3 +22,4 @@ target_link_libraries(simbehavior_bt_nodes
 )
 
 target_compile_features(simbehavior_bt_nodes PUBLIC cxx_std_17)
+target_link_libraries(simbehavior_bt_nodes PRIVATE simbehavior_compile_warnings)

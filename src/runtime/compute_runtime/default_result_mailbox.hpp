@@ -5,6 +5,7 @@
 #include <queue>
 #include <unordered_map>
 
+#include "sim_bt/common/types.hpp"
 #include "sim_bt/runtime/compute_runtime/i_result_mailbox.hpp"
 
 namespace sim_bt {
