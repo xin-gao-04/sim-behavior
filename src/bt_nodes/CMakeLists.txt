@@ -15,7 +15,7 @@ target_include_directories(simbehavior_bt_nodes
 
 target_link_libraries(simbehavior_bt_nodes
   PUBLIC
-    behaviortree_cpp::behaviortree_cpp
+    BT::behaviortree_cpp
     simbehavior_bt_runtime
     simbehavior_domain
     simbehavior_adapters

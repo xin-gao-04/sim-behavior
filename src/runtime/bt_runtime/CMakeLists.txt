@@ -11,7 +11,7 @@ target_include_directories(simbehavior_bt_runtime
 
 target_link_libraries(simbehavior_bt_runtime
   PUBLIC
-    behaviortree_cpp::behaviortree_cpp
+    BT::behaviortree_cpp
     simbehavior_compute_runtime
     simbehavior_async_runtime
   PRIVATE

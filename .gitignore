@@ -1,5 +1,7 @@
 build/
 cmake-build-*/
+.DS_Store
+**/.DS_Store
 .cache/
 *.user
 .vs/
