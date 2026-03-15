@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>三方库使用文档 — sim_behavior 后端工程</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121933;
+      --panel-2: #1a2345;
+      --text: #e8ecf7;
+      --muted: #a9b4d0;
+      --line: #2c3760;
+      --accent: #7cc4ff;
+      --accent-2: #93f0c0;
+      --warn: #ffd17a;
+      --code: #0d1328;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, var(--bg), #0f1730 50%, #11182e);
+      color: var(--text);
+      line-height: 1.7;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 100vh;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 24px 20px 40px;
+      border-right: 1px solid var(--line);
+      background: rgba(10, 15, 31, 0.92);
+      backdrop-filter: blur(12px);
+    }
+    nav h1 {
+      font-size: 20px;
+      line-height: 1.35;
+      margin: 0 0 10px;
+    }
+    nav .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+    nav a {
+      color: var(--text);
+      text-decoration: none;
+      display: block;
+      padding: 8px 10px;
+      border-radius: 10px;
+      margin: 2px 0;
+      font-size: 14px;
+    }
+    nav a:hover { background: rgba(124, 196, 255, 0.12); }
+    main {
+      padding: 40px 48px 80px;
+      max-width: 1200px;
+    }
+    .hero {
+      background: linear-gradient(135deg, rgba(124,196,255,.16), rgba(147,240,192,.10));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px;
+      margin-bottom: 28px;
+    }
+    .hero h2 { margin: 0 0 10px; font-size: 30px; }
+    .hero p { margin: 8px 0; color: var(--muted); }
+    section {
+      background: rgba(18, 25, 51, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px;
+      margin: 22px 0;
+    }
+    h2 { font-size: 28px; margin: 0 0 16px; }
+    h3 { font-size: 22px; margin: 26px 0 10px; }
+    h4 { font-size: 18px; margin: 20px 0 8px; }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin: 16px 0;
+    }
+    .card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(124,196,255,.13);
+      color: var(--accent);
+      font-size: 12px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .badge-green {
+      background: rgba(147,240,192,.13);
+      color: var(--accent-2);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 6px;
+      overflow: hidden;
+      border-radius: 12px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #162044; }
+    td { background: rgba(14, 19, 40, 0.75); }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: rgba(124,196,255,.10);
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #d8efff;
+    }
+    pre {
+      background: var(--code);
+      color: #dce8ff;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: rgba(124,196,255,.08);
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin: 14px 0;
+    }
+    .warn {
+      border-left-color: var(--warn);
+      background: rgba(255,209,122,.08);
+    }
+    ul { padding-left: 22px; }
+    .footer { color: var(--muted); font-size: 14px; }
+    .small { font-size: 13px; color: var(--muted); }
+    .version-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: rgba(124,196,255,.05);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin-bottom: 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .version-bar code { font-size: 12px; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+      main { padding: 28px 18px 60px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <nav>
+      <h1>三方库使用文档</h1>
+      <div class="sub">sim_behavior 后端工程 · BehaviorTree.CPP 4.9.0 · oneTBB · libuv · uvw 3.4.0 · GoogleTest</div>
+      <a href="#overview">1. 文档目标与版本边界</a>
+      <a href="#matrix">2. 组件定位与职责矩阵</a>
+      <a href="#cmake">3. CMake 组织与依赖接入</a>
+      <a href="#arch">4. 实际模块结构与接口</a>
+      <a href="#bt">5. BehaviorTree.CPP 4.9.0</a>
+      <a href="#tbb">6. oneTBB</a>
+      <a href="#libuv">7. libuv</a>
+      <a href="#uvw">8. uvw 3.4.0</a>
+      <a href="#gtest">9. GoogleTest</a>
+      <a href="#integration">10. 多库整合流程</a>
+      <a href="#crosslib">11. 跨库交互边界与测试</a>
+      <a href="#deployment">12. 开发与部署建议</a>
+      <a href="#pitfalls">13. 常见误区与规避</a>
+      <a href="#changelog">14. 文档版本历史</a>
+      <a href="#refs">15. 参考资料</a>
+    </nav>
+    <main>
+
+      <!-- ── Hero ───────────────────────────────────────────────────────── -->
+      <div class="version-bar">
+        <span>文档版本</span>
+        <code>v2.0.0</code>
+        <span>·</span>
+        <span>最后更新 2026-03-15</span>
+        <span>·</span>
+        <span>项目 <code>sim_behavior 0.1.0</code></span>
+      </div>
+
+      <div class="hero" id="overview">
+        <h2>三方库使用文档 — sim_behavior 后端工程</h2>
+        <p>这份文档面向 <strong>sim_behavior</strong> 工程的所有贡献者。目标不是把 API 简单抄一遍，而是把这五个库在当前架构中的职责、常用接口、调用顺序、接入方式和工程边界整理成一份可实施的使用手册。</p>
+        <p>文档基于项目 <code>v0.1.0</code> 的实际代码（公开接口位于 <code>include/sim_bt/</code>，具体实现位于 <code>src/</code>），优先反映已落地的接口约定；官方文档作为权威参考，所有接口以实际编译版本为准。</p>
+        <div>
+          <span class="badge">C++20</span>
+          <span class="badge">后端架构导向</span>
+          <span class="badge">可直接纳入工程规范</span>
+          <span class="badge badge-green">通用工具仓库</span>
+        </div>
+      </div>
+
+      <!-- ── Matrix ─────────────────────────────────────────────────────── -->
+      <section id="matrix">
+        <h2>组件定位与职责矩阵</h2>
+        <table>
+          <thead>
+            <tr><th>组件</th><th>在本架构中的角色</th><th>该做什么</th><th>不该做什么</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>BehaviorTree.CPP 4.9.0</code></td>
+              <td>行为语义与树执行内核</td>
+              <td>节点注册、XML 装树、黑板、日志、<code>StatefulActionNode</code> 异步状态机</td>
+              <td>直接承载长耗时 CPU 计算或复杂 I/O 循环</td>
+            </tr>
+            <tr>
+              <td><code>oneTBB</code></td>
+              <td>CPU 任务执行层（封装为 <code>TbbJobExecutor</code>）</td>
+              <td><code>task_arena</code>、<code>task_group</code>、多优先级任务隔离、可取消任务</td>
+              <td>承担事件循环、socket I/O、行为树控制语义</td>
+            </tr>
+            <tr>
+              <td><code>libuv</code></td>
+              <td>事件循环底座</td>
+              <td>event loop、timer、async、TCP/UDP、pipe</td>
+              <td>大规模 CPU 密集计算主调度器</td>
+            </tr>
+            <tr>
+              <td><code>uvw 3.4.0</code></td>
+              <td>libuv 的现代 C++ 包装（封装为 <code>UvwEventLoopRuntime</code>）</td>
+              <td>RAII 管理 handle、event 注册、loop 线程任务投递</td>
+              <td>改变 libuv 的生命周期规则</td>
+            </tr>
+            <tr>
+              <td><code>GoogleTest</code></td>
+              <td>测试与回归验证</td>
+              <td>单元测试、集成测试、<strong>跨库交互边界测试</strong>、异步时序测试</td>
+              <td>替代运行时日志、替代性能压测</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="callout">总原则：让 BehaviorTree.CPP 决定"该做什么"，让 oneTBB 决定"谁来算"，让 libuv/uvw 决定"什么时候回来以及如何安全回来"，让 GoogleTest 保证这些边界没有被破坏。</div>
+      </section>
+
+      <!-- ── CMake ──────────────────────────────────────────────────────── -->
+      <section id="cmake">
+        <h2>CMake 组织与依赖接入</h2>
+        <h3>实际模块拆分（与 <code>src/</code> 目录对应）</h3>
+        <pre>sim_behavior/
+├── include/sim_bt/              # 公开接口（所有子模块共享）
+│   ├── common/                  # types.hpp, result.hpp
+│   ├── runtime/
+│   │   ├── bt_runtime/          # IBtRuntime
+│   │   ├── compute_runtime/     # IJobExecutor, IResultMailbox, ICancellationToken, IJobHandle
+│   │   └── async_runtime/       # IEventLoopRuntime, ITimerHandle, IWakeupBridge, IBusAdapter
+│   ├── bt_nodes/                # IAsyncActionContext, AsyncActionBase
+│   ├── adapters/                # ICommandBus
+│   └── domain/                  # IEntityContext, IGroupContext, IWorldSnapshot
+├── src/
+│   ├── runtime/
+│   │   ├── bt_runtime/          # BtRuntimeImpl, TreeInstanceImpl, AsyncActionContextImpl
+│   │   ├── compute_runtime/     # TbbJobExecutor, DefaultResultMailbox, TbbJobHandle
+│   │   └── async_runtime/       # UvwEventLoopRuntime, UvwTimerHandle, UvwWakeupBridge
+│   ├── domain/                  # EntityContextImpl, GroupContextImpl, WorldSnapshotImpl
+│   ├── adapters/                # CommandBusImpl
+│   ├── bt_nodes/                # AsyncActionBase
+│   └── sim_host/                # SimHostApp, main
+├── tests/                       # GoogleTest 测试套件
+└── third_party/                 # BehaviorTree.CPP, oneTBB, libuv, uvw, GoogleTest
+</pre>
+
+        <h3>CMake 目标层次（实际项目）</h3>
+        <pre>cmake_minimum_required(VERSION 3.24)
+project(sim_behavior VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 三方依赖通过 cmake/Dependencies.cmake 统一引入（本地 zip 离线部署）
+include(cmake/Dependencies.cmake)
+
+set(SIMBEHAVIOR_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+# 运行时层
+add_subdirectory(src/runtime/compute_runtime)   # → simbehavior_compute_runtime
+add_subdirectory(src/runtime/async_runtime)     # → simbehavior_async_runtime
+add_subdirectory(src/runtime/bt_runtime)        # → simbehavior_bt_runtime
+
+# 领域模型层
+add_subdirectory(src/domain)                    # → simbehavior_domain
+
+# 适配器层
+add_subdirectory(src/adapters)                  # → simbehavior_adapters
+
+# BT 节点层
+add_subdirectory(src/bt_nodes)                  # → simbehavior_bt_nodes
+
+# 宿主进程
+add_subdirectory(src/sim_host)                  # → sim_host_app (可执行)
+
+# 测试
+enable_testing()
+add_subdirectory(tests)</pre>
+
+        <h3>依赖策略</h3>
+        <ul>
+          <li>三方库以 zip 包形式存储在 <code>third_party/</code>，通过 <code>cmake/Dependencies.cmake</code> 离线引入，支持完全内网编译。</li>
+          <li><code>uvw</code> 以 header-only 模式使用，直接 include <code>third_party/uvw/src</code>，链接 <code>libuv</code>。</li>
+          <li>业务模块不直接链接三方库。各 runtime 封装层（<code>compute_runtime</code>、<code>async_runtime</code>、<code>bt_runtime</code>）对外暴露统一接口。</li>
+          <li>所有公开接口置于 <code>include/sim_bt/</code>，实现细节置于 <code>src/</code>，接口与实现物理隔离。</li>
+        </ul>
+        <div class="callout warn">不同平台/包管理器中导出目标名可能不同（<code>TBB::tbb</code>、<code>uv</code>、<code>uvw::uvw</code>）。务必以 <code>cmake/Dependencies.cmake</code> 中实际导出的目标名为准。</div>
+      </section>
+
+      <!-- ── Arch ───────────────────────────────────────────────────────── -->
+      <section id="arch">
+        <h2>实际模块结构与接口</h2>
+        <p>本节描述项目中已落地的公开接口，这些接口定义在 <code>include/sim_bt/</code> 中，是各层之间的稳定契约。</p>
+
+        <h3>接口总览</h3>
+        <table>
+          <thead><tr><th>接口</th><th>头文件</th><th>所在层</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>IJobExecutor</code></td><td><code>runtime/compute_runtime/i_job_executor.hpp</code></td><td>计算层</td><td>提交 CPU 任务到 oneTBB arena，管理优先级与取消</td></tr>
+            <tr><td><code>IResultMailbox</code></td><td><code>runtime/compute_runtime/i_result_mailbox.hpp</code></td><td>计算层</td><td>TBB worker → uvw loop 的线程安全结果中转</td></tr>
+            <tr><td><code>ICancellationToken</code></td><td><code>runtime/compute_runtime/i_cancellation_token.hpp</code></td><td>计算层</td><td>合作式取消令牌，worker 热路径轮询</td></tr>
+            <tr><td><code>IJobHandle</code></td><td><code>runtime/compute_runtime/i_job_handle.hpp</code></td><td>计算层</td><td>已提交任务的句柄，查询状态与请求取消</td></tr>
+            <tr><td><code>IEventLoopRuntime</code></td><td><code>runtime/async_runtime/i_event_loop_runtime.hpp</code></td><td>事件层</td><td>管理 uvw loop 生命周期、定时器、跨线程唤醒、任务投递</td></tr>
+            <tr><td><code>ITimerHandle</code></td><td><code>runtime/async_runtime/i_event_loop_runtime.hpp</code></td><td>事件层</td><td>一次性/重复定时器句柄，可取消</td></tr>
+            <tr><td><code>IWakeupBridge</code></td><td><code>runtime/async_runtime/i_wakeup_bridge.hpp</code></td><td>事件层</td><td>TBB → BT 的唤醒通道抽象</td></tr>
+            <tr><td><code>IBtRuntime</code></td><td><code>runtime/bt_runtime/i_bt_runtime.hpp</code></td><td>BT 层</td><td>树注册、tick 驱动、wake-up 请求</td></tr>
+            <tr><td><code>IAsyncActionContext</code></td><td><code>bt_nodes/i_async_action_context.hpp</code></td><td>节点层</td><td>BT 节点的运行时 Facade，屏蔽 TBB/uvw 细节</td></tr>
+            <tr><td><code>IEntityContext</code></td><td><code>domain/entity/i_entity_context.hpp</code></td><td>领域层</td><td>实体状态（目标、标志、数值、tick 时间）</td></tr>
+            <tr><td><code>IGroupContext</code></td><td><code>domain/group/i_group_context.hpp</code></td><td>领域层</td><td>编队状态与成员</td></tr>
+            <tr><td><code>IWorldSnapshot</code></td><td><code>domain/world/i_world_snapshot.hpp</code></td><td>领域层</td><td>当前帧的全局世界快照（只读）</td></tr>
+            <tr><td><code>ICommandBus</code></td><td><code>adapters/i_command_bus.hpp</code></td><td>适配器层</td><td>向外部系统发送指令的总线抽象</td></tr>
+          </tbody>
+        </table>
+
+        <h3>核心数据类型</h3>
+        <table>
+          <thead><tr><th>类型</th><th>定义位置</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>JobResult</code></td><td><code>i_result_mailbox.hpp</code></td><td>TBB worker 完成后写入邮箱的结果；<code>payload</code> 用 <code>std::any</code> 类型擦除</td></tr>
+            <tr><td><code>JobDescriptor</code></td><td><code>i_job_executor.hpp</code></td><td>任务描述：执行体、优先级、提交者名称</td></tr>
+            <tr><td><code>JobPriority</code></td><td><code>common/types.hpp</code></td><td><code>kHigh</code> / <code>kNormal</code> / <code>kLow</code>，对应三个 TBB arena</td></tr>
+            <tr><td><code>NodeStatus</code></td><td><code>common/types.hpp</code></td><td><code>kIdle</code> / <code>kRunning</code> / <code>kSuccess</code> / <code>kFailure</code>，与 BT 状态对齐</td></tr>
+            <tr><td><code>EntityId</code> / <code>GroupId</code></td><td><code>common/types.hpp</code></td><td><code>uint32_t</code>；<code>kInvalidEntityId = 0</code></td></tr>
+            <tr><td><code>SimTimeMs</code></td><td><code>common/types.hpp</code></td><td><code>uint64_t</code> 毫秒时间戳，避免浮点累积误差</td></tr>
+            <tr><td><code>SimStatus</code> / <code>SimResult&lt;T&gt;</code></td><td><code>common/result.hpp</code></td><td>轻量错误传播，与 corekit 语义对齐但不依赖其头文件</td></tr>
+          </tbody>
+        </table>
+
+        <h3>关键实现类</h3>
+        <table>
+          <thead><tr><th>实现类</th><th>实现的接口</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td><code>TbbJobExecutor</code></td><td><code>IJobExecutor</code></td><td><code>src/runtime/compute_runtime/tbb_job_executor.hpp</code></td></tr>
+            <tr><td><code>DefaultResultMailbox</code></td><td><code>IResultMailbox</code></td><td><code>src/runtime/compute_runtime/default_result_mailbox.hpp</code></td></tr>
+            <tr><td><code>DefaultCancellationToken</code></td><td><code>ICancellationToken</code></td><td><code>include/sim_bt/runtime/compute_runtime/i_cancellation_token.hpp</code></td></tr>
+            <tr><td><code>UvwEventLoopRuntime</code></td><td><code>IEventLoopRuntime</code></td><td><code>src/runtime/async_runtime/uvw_event_loop_runtime.hpp</code></td></tr>
+            <tr><td><code>UvwTimerHandle</code></td><td><code>ITimerHandle</code></td><td><code>src/runtime/async_runtime/uvw_timer_handle.hpp</code></td></tr>
+            <tr><td><code>AsyncActionContextImpl</code></td><td><code>IAsyncActionContext</code></td><td><code>src/runtime/bt_runtime/async_action_context_impl.hpp</code></td></tr>
+            <tr><td><code>EntityContextImpl</code></td><td><code>IEntityContext</code></td><td><code>src/domain/entity/entity_context_impl.hpp</code></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ── BT ────────────────────────────────────────────────────────── -->
+      <section id="bt">
+        <h2>BehaviorTree.CPP 4.9.0</h2>
+        <p>BehaviorTree.CPP 的核心价值是把行为决策组织成可组合、可回放、可调试的树结构。官方文档强调，树执行引擎是单线程的，所有 <code>tick()</code> 顺序执行；长时间动作不应该阻塞树，而应该尽快返回 <code>RUNNING</code>。在本项目中，BT 负责行为语义，不负责计算本身。</p>
+
+        <h3>最重要的接口面</h3>
+        <div class="grid">
+          <div class="card">
+            <h4>树工厂</h4>
+            <p><code>BT::BehaviorTreeFactory</code></p>
+            <p class="muted">注册节点、加载 XML、创建树实例。</p>
+          </div>
+          <div class="card">
+            <h4>树实例</h4>
+            <p><code>BT::Tree</code></p>
+            <p class="muted">持有根节点和黑板，供 runtime tick。</p>
+          </div>
+          <div class="card">
+            <h4>黑板</h4>
+            <p><code>BT::Blackboard</code></p>
+            <p class="muted">树内数据流载体。4.9.0 具备时间戳与更新跟踪能力。</p>
+          </div>
+          <div class="card">
+            <h4>异步动作基类</h4>
+            <p><code>BT::StatefulActionNode</code></p>
+            <p class="muted">推荐用于 request-reply 型异步动作。</p>
+          </div>
+        </div>
+
+        <h3>推荐使用流程</h3>
+        <pre>1. 创建 BehaviorTreeFactory
+2. 注册同步节点 / 异步节点 / 自定义类型转换
+3. 创建 blackboard，并写入运行时上下文
+4. 从 XML 文本或文件创建 Tree
+5. 在固定 tick 线程中循环执行 tree.tickWhileRunning() 或显式 tick
+6. 异步节点只负责启动外部任务、查询结果、响应 halt
+7. 通过 logger / sqlite / Groot2 做状态观测</pre>
+
+        <h3>最常用的类与方法</h3>
+        <table>
+          <thead><tr><th>对象</th><th>常用接口</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><code>BehaviorTreeFactory</code></td><td><code>registerNodeType</code>、<code>createTreeFromText</code>、<code>createTreeFromFile</code></td><td>注册和装树</td></tr>
+            <tr><td><code>TreeNode</code></td><td><code>getInput</code>、<code>setOutput</code>、<code>emitWakeUpSignal</code></td><td>端口读写与异步唤醒</td></tr>
+            <tr><td><code>StatefulActionNode</code></td><td><code>onStart</code>、<code>onRunning</code>、<code>onHalted</code></td><td>异步动作状态机</td></tr>
+            <tr><td><code>Blackboard</code></td><td><code>set</code>、<code>get</code>、<code>getStamped</code></td><td>状态存取与版本感知</td></tr>
+          </tbody>
+        </table>
+
+        <h3>最小示例</h3>
+        <pre>#include &lt;behaviortree_cpp/bt_factory.h&gt;
+#include &lt;behaviortree_cpp/action_node.h&gt;
+
+class CheckResource : public BT::SyncActionNode {
+public:
+  CheckResource(const std::string &amp;name, const BT::NodeConfig &amp;cfg)
+      : BT::SyncActionNode(name, cfg) {}
+
+  static BT::PortsList providedPorts() {
+    return { BT::InputPort&lt;int&gt;("count") };
+  }
+
+  BT::NodeStatus tick() override {
+    int count = 0;
+    getInput("count", count);
+    return count &gt; 0 ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  }
+};
+
+BT::BehaviorTreeFactory factory;
+factory.registerNodeType&lt;CheckResource&gt;("CheckResource");
+auto tree = factory.createTreeFromText(R"(
+&lt;root BTCPP_format=&quot;4&quot;&gt;
+  &lt;BehaviorTree ID=&quot;MainTree&quot;&gt;
+    &lt;CheckResource count=&quot;{count}&quot;/&gt;
+  &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+)");
+
+tree.rootBlackboard()-&gt;set("count", 5);
+auto status = tree.tickOnce();</pre>
+
+        <h3>异步动作节点的正确写法（结合 IAsyncActionContext）</h3>
+        <pre>// 本项目中异步节点通过 IAsyncActionContext 与底层运行时交互
+class ComputeAction : public BT::StatefulActionNode {
+  std::shared_ptr&lt;IAsyncActionContext&gt; ctx_;
+  uint64_t job_id_ = 0;
+
+public:
+  using BT::StatefulActionNode::StatefulActionNode;
+
+  static BT::PortsList providedPorts() {
+    return { BT::InputPort&lt;int&gt;("timeout_ms") };
+  }
+
+  BT::NodeStatus onStart() override {
+    auto handle = ctx_-&gt;SubmitCpuJob(
+        JobPriority::kNormal,
+        [](CancellationTokenPtr token, JobResult&amp; out) {
+            // TBB worker 线程：CPU 密集计算
+            if (token-&gt;IsCancelled()) return;
+            out.succeeded = true;
+        });
+    job_id_ = handle-&gt;JobId();
+    ctx_-&gt;StartTimeout(std::chrono::milliseconds(200));
+    return BT::NodeStatus::RUNNING;
+  }
+
+  BT::NodeStatus onRunning() override {
+    if (ctx_-&gt;IsTimedOut()) return BT::NodeStatus::FAILURE;
+    auto result = ctx_-&gt;PeekResult(job_id_);
+    if (!result) return BT::NodeStatus::RUNNING;
+    ctx_-&gt;ConsumeResult(job_id_);
+    ctx_-&gt;CancelTimeout();
+    return result-&gt;succeeded ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  }
+
+  void onHalted() override {
+    ctx_-&gt;CancelJob(job_id_);
+    ctx_-&gt;CancelTimeout();
+  }
+};</pre>
+
+        <div class="callout">在本项目中，BT 节点只依赖 <code>IAsyncActionContext</code> 接口，不直接持有 uvw 或 TBB 对象。这确保节点可在测试中注入 mock，也使节点代码不受库升级影响。</div>
+      </section>
+
+      <!-- ── TBB ────────────────────────────────────────────────────────── -->
+      <section id="tbb">
+        <h2>oneTBB</h2>
+        <p>oneTBB 在本方案中的定位是 CPU 异步任务调度器，封装在 <code>TbbJobExecutor</code> 中。BT 节点通过 <code>IAsyncActionContext::SubmitCpuJob()</code> 提交任务，不直接接触 TBB API。</p>
+
+        <h3>TbbJobExecutor 内部结构</h3>
+        <table>
+          <thead><tr><th>接口</th><th>建议用途</th><th>备注</th></tr></thead>
+          <tbody>
+            <tr><td><code>oneapi::tbb::task_arena</code></td><td>三个 arena（high/normal/low），对应三种 <code>JobPriority</code></td><td>并发数可通过 <code>ArenaConfig</code> 配置</td></tr>
+            <tr><td><code>oneapi::tbb::task_group</code></td><td>每个 arena 对应一个 task_group，用于 Shutdown 等待</td><td>适合局部并发</td></tr>
+            <tr><td><code>task_arena::execute + task_group::run</code></td><td>投递任务：先 execute 进入 arena，再 run 提交到 task_group</td><td>当前采用此方式</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Arena 并发配置</h3>
+        <pre>struct ArenaConfig {
+  int high_concurrency   = 2;   // 高优先级（战术决策等）
+  int normal_concurrency = 4;   // 中优先级（路径规划、几何计算）
+  int low_concurrency    = 2;   // 低优先级（预取、后台统计）
+};
+
+// 创建 executor
+auto executor = std::make_shared&lt;TbbJobExecutor&gt;(ArenaConfig{});
+
+// 注入 wakeup 回调（由 UvwEventLoopRuntime 提供）
+executor-&gt;SetWakeupCallback([&amp;event_loop]() {
+  event_loop.PostToLoop(/* DrainMailbox 逻辑 */);
+});</pre>
+
+        <h3>任务提交流程</h3>
+        <pre>// BT 节点通过 IAsyncActionContext 提交（不直接调用 executor）
+auto handle = ctx-&gt;SubmitCpuJob(
+    JobPriority::kNormal,
+    [](CancellationTokenPtr token, JobResult&amp; out) {
+        // 在 TBB worker 线程执行
+        for (int i = 0; i &lt; 1000000; ++i) {
+            if (token-&gt;IsCancelled()) return;
+            // ... CPU 密集计算
+        }
+        out.succeeded = true;
+        out.payload   = MyComputeResult{...};
+    });
+uint64_t job_id = handle-&gt;JobId();</pre>
+
+        <h3>使用 oneTBB 时的关键取舍</h3>
+        <ul>
+          <li>取消应由 <code>ICancellationToken</code> 的合作式轮询承担，而不是强制打断 worker。</li>
+          <li>如果 <code>max_concurrency</code> 与 <code>reserved_for_masters</code> 设置不当，<code>enqueue()</code> 的调度保证可能失效，详见 TBB 官方文档。</li>
+          <li>CPU 密集工作只在 TBB arena 中执行。不要把 libuv 的 <code>uv_queue_work()</code> 当成主计算层。</li>
+        </ul>
+      </section>
+
+      <!-- ── libuv ─────────────────────────────────────────────────────── -->
+      <section id="libuv">
+        <h2>libuv</h2>
+        <p>libuv 是跨平台异步 I/O 底座，封装在 <code>UvwEventLoopRuntime</code> 中。对于本后端，其价值主要在事件循环、定时器和跨线程唤醒。</p>
+
+        <h3>核心概念</h3>
+        <div class="grid">
+          <div class="card"><h4>loop</h4><p><code>uv_loop_t</code> 是事件循环上下文，在 uvw 中为 <code>uvw::loop</code>。</p></div>
+          <div class="card"><h4>handle</h4><p>长期存在的对象，例如 <code>uv_timer_t</code>、<code>uv_async_t</code>。</p></div>
+          <div class="card"><h4>request</h4><p>一次性请求对象，例如文件、work request。</p></div>
+          <div class="card"><h4>callback</h4><p>所有完成通知最终在 loop 线程回调，无需额外加锁。</p></div>
+        </div>
+
+        <h3>在本架构中的典型用法</h3>
+        <table>
+          <thead><tr><th>接口</th><th>用途</th><th>在本架构中的典型用法</th></tr></thead>
+          <tbody>
+            <tr><td><code>uv_loop_init / uv_run</code></td><td>创建与运行事件循环</td><td><code>UvwEventLoopRuntime::Start()</code> 在独立线程启动</td></tr>
+            <tr><td><code>uv_timer_init / uv_timer_start</code></td><td>超时与周期事件</td><td>动作超时（<code>StartOneShotTimer</code>）、心跳（<code>StartRepeatingTimer</code>）</td></tr>
+            <tr><td><code>uv_async_init / uv_async_send</code></td><td>跨线程唤醒 loop</td><td>TBB 任务完成后通知事件线程（<code>PostToLoop</code>）</td></tr>
+            <tr><td><code>uv_tcp_init / uv_read_start</code></td><td>网络接入</td><td>总线或外部服务适配（由 <code>IBusAdapter</code> 抽象）</td></tr>
+            <tr><td><code>uv_queue_work</code></td><td>线程池工作</td><td>仅作为桥接阻塞库的备用，不作为主 CPU 执行层</td></tr>
+          </tbody>
+        </table>
+
+        <div class="callout warn">libuv 的 thread pool 是全局共享的，默认大小 4，可通过 <code>UV_THREADPOOL_SIZE</code> 调整。对于本后端，这个模型不适合作为主计算层，主计算层由 TBB arena 承担。</div>
+      </section>
+
+      <!-- ── uvw ────────────────────────────────────────────────────────── -->
+      <section id="uvw">
+        <h2>uvw 3.4.0</h2>
+        <p>uvw 是 libuv 的现代 C++ 包装，在本项目中封装为 <code>UvwEventLoopRuntime</code>。它不改变 libuv 的生命周期规则，价值在于 RAII 资源管理和事件注册风格更符合现代 C++。</p>
+
+        <h3>UvwEventLoopRuntime 内部结构</h3>
+        <ul>
+          <li>一个 <code>uvw::loop</code> 在独立线程（<code>loop_thread_</code>）中运行。</li>
+          <li>一个 <code>uvw::async_handle</code>（<code>post_async_</code>）用于跨线程投递 <code>PostToLoop</code> 回调。</li>
+          <li>一个 <code>uvw::async_handle</code>（<code>stop_async_</code>）用于优雅停止 loop。</li>
+          <li><code>PostToLoop</code> 将 callback 写入 <code>post_queue_</code> 后触发 <code>post_async_</code>，在 loop 线程批量执行。</li>
+        </ul>
+
+        <h3>常用对象与接口（uvw 原生）</h3>
+        <table>
+          <thead><tr><th>对象</th><th>常用接口</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><code>uvw::loop</code></td><td><code>create</code>、<code>run</code>、<code>resource&lt;T&gt;</code></td><td>获取 loop 与创建 handle</td></tr>
+            <tr><td><code>uvw::timer_handle</code></td><td><code>start</code>、<code>stop</code>、<code>on&lt;uvw::timer_event&gt;</code></td><td>超时控制</td></tr>
+            <tr><td><code>uvw::async_handle</code></td><td><code>send</code>、<code>on&lt;uvw::async_event&gt;</code></td><td>跨线程唤醒</td></tr>
+            <tr><td><code>uvw::tcp_handle</code></td><td><code>bind</code>、<code>listen</code>、<code>read</code>、<code>write</code></td><td>TCP 接入</td></tr>
+          </tbody>
+        </table>
+
+        <h3>IEventLoopRuntime 使用示例（推荐方式）</h3>
+        <pre>// 通过接口使用，不依赖 uvw 原生类型
+auto event_loop = std::make_shared&lt;UvwEventLoopRuntime&gt;();
+event_loop-&gt;Start();
+
+// 跨线程唤醒（从 TBB worker 调用）
+event_loop-&gt;WakeUp([]() {
+  // 在 loop 线程执行：drainMailbox 逻辑
+});
+
+// 一次性定时器
+auto timer = event_loop-&gt;StartOneShotTimer(
+    std::chrono::milliseconds(100),
+    []() { /* 超时回调，在 loop 线程 */ });
+
+// 取消定时器
+timer-&gt;Cancel();
+
+// loop 线程投递任务（队列语义，不合并）
+event_loop-&gt;PostToLoop([]() {
+  // 在 loop 线程上安全执行
+});
+
+event_loop-&gt;Stop();</pre>
+
+        <h3>TBB 结果回投到 uvw 的标准模式</h3>
+        <pre>// 初始化时注入 wakeup 回调（TBB 完成 → uvw 消费）
+executor-&gt;SetWakeupCallback([event_loop, mailbox]() {
+  event_loop-&gt;PostToLoop([mailbox]() {
+    // 在 loop 线程串行消费：无锁访问 ready map
+    mailbox-&gt;DrainAll([](const JobResult&amp; r) {
+      // 更新动作状态表
+    });
+  });
+});
+
+// TBB 任务完成后自动触发上述 callback（在 TbbJobExecutor 内部）
+// → Post() 写入 mailbox → notify_cb_() → PostToLoop → DrainAll</pre>
+
+        <div class="callout">uvw 很适合作为 libuv 的工程化接口层，但不会替你解决线程安全问题。所有跨线程状态更新仍应通过 mailbox + PostToLoop 模式串行化到 loop 线程，再由 BT tick 读取。</div>
+      </section>
+
+      <!-- ── GTest ──────────────────────────────────────────────────────── -->
+      <section id="gtest">
+        <h2>GoogleTest</h2>
+        <p>GoogleTest 的职责是把对运行时边界的约束固化下来，尤其是行为树节点、异步动作状态机、结果回投与超时逻辑，以及<strong>跨库交互边界</strong>。</p>
+
+        <h3>测试目标文件（<code>sim_behavior_tests</code>）</h3>
+        <pre>add_executable(sim_behavior_tests
+  test_main.cpp
+  test_cancellation_token.cpp        # ICancellationToken 单元测试
+  test_result_mailbox.cpp            # IResultMailbox / DefaultResultMailbox 单元测试
+  test_entity_context.cpp            # IEntityContext / EntityContextImpl 单元测试
+  test_async_action_base.cpp         # AsyncActionBase 单元测试（待完善）
+  test_cross_library_integration.cpp # 跨库交互边界测试（TBB ↔ Mailbox ↔ uvw）
+)
+
+target_link_libraries(sim_behavior_tests
+  PRIVATE
+    simbehavior_bt_nodes
+    simbehavior_bt_runtime
+    simbehavior_async_runtime
+    simbehavior_compute_runtime
+    simbehavior_domain
+    simbehavior_adapters
+    GTest::gtest
+    GTest::gtest_main
+    simbehavior_compile_warnings
+)</pre>
+
+        <h3>推荐测试层次</h3>
+        <div class="grid">
+          <div class="card">
+            <h4>组件单元测试 ✓</h4>
+            <p class="muted">已有：<code>DefaultResultMailbox</code>、<code>EntityContextImpl</code>、<code>DefaultCancellationToken</code>。验证端口读写、返回码、生命周期。</p>
+          </div>
+          <div class="card">
+            <h4>跨库边界测试 ✓</h4>
+            <p class="muted">新增：TBB 提交任务 → Mailbox Post → uvw PostToLoop → DrainAll 整体链路，验证结果正确到达。</p>
+          </div>
+          <div class="card">
+            <h4>异步动作单测</h4>
+            <p class="muted">待完善：验证 RUNNING、超时、取消、回投后的 SUCCESS / FAILURE。使用 mock IAsyncActionContext。</p>
+          </div>
+          <div class="card">
+            <h4>BT + Runtime 集成测试</h4>
+            <p class="muted">后续：验证 BT runtime + TBB + uvw 完整联动是否符合预期，使用真实节点和真实树 XML。</p>
+          </div>
+        </div>
+
+        <h3>示例：异步节点测试（使用 mock）</h3>
+        <pre>TEST(AsyncActionBase, ReturnsSuccessAfterMailboxResult) {
+  MockAsyncActionContext ctx;
+  MyAsyncAction action("MyAction", MakeConfig(ctx));
+
+  EXPECT_EQ(action.executeTick(), BT::NodeStatus::RUNNING);
+
+  ctx.SimulateJobCompletion(true);
+
+  EXPECT_EQ(action.executeTick(), BT::NodeStatus::SUCCESS);
+}</pre>
+      </section>
+
+      <!-- ── Integration ────────────────────────────────────────────────── -->
+      <section id="integration">
+        <h2>多库整合流程</h2>
+        <h3>运行时主链路</h3>
+        <pre>WorldSnapshot 刷新
+    ↓
+BT Runtime 在 tick 线程推进树
+    ↓
+同步节点直接读取 snapshot（无需跨线程）
+    ↓
+异步动作节点 onStart
+    ├─ ctx→SubmitCpuJob → TbbJobExecutor::Submit
+    │     └─ 进入对应 arena（high/normal/low）
+    ├─ ctx→StartTimeout → UvwEventLoopRuntime::StartOneShotTimer
+    └─ 返回 RUNNING
+    ↓
+TBB worker 完成
+    ├─ 写 JobResult → DefaultResultMailbox::Post()
+    └─ notify_cb_() → EventLoopRuntime::PostToLoop(DrainAll)
+    ↓
+uvw loop 线程执行 DrainAll
+    ├─ incoming_ → ready_（按 job_id 索引）
+    └─ EmitWakeup → BT Runtime::RequestWakeup
+    ↓
+下一次 BT tick → onRunning
+    ├─ ctx→PeekResult(job_id) → 有结果
+    ├─ ctx→ConsumeResult(job_id)
+    ├─ ctx→CancelTimeout()
+    └─ 返回 SUCCESS / FAILURE</pre>
+
+        <h3>核心抽象与职责</h3>
+        <table>
+          <thead><tr><th>抽象</th><th>接口</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>TbbJobExecutor</code></td><td><code>IJobExecutor</code></td><td>三 arena 任务提交、取消令牌生命周期、pending 计数</td></tr>
+            <tr><td><code>DefaultResultMailbox</code></td><td><code>IResultMailbox</code></td><td>线程安全结果中转：Post（worker 线程）→ DrainAll（loop 线程）→ Peek/Consume（tick 线程）</td></tr>
+            <tr><td><code>UvwEventLoopRuntime</code></td><td><code>IEventLoopRuntime</code></td><td>loop 生命周期、定时器工厂、跨线程 PostToLoop</td></tr>
+            <tr><td><code>AsyncActionContextImpl</code></td><td><code>IAsyncActionContext</code></td><td>BT 节点的 Facade，聚合 executor + event_loop + bt_runtime</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ── CrossLib ───────────────────────────────────────────────────── -->
+      <section id="crosslib">
+        <h2>跨库交互边界与测试</h2>
+        <p>本项目的主要风险点不在单个库的正确性，而在<strong>库与库之间的交互边界</strong>：</p>
+        <ul>
+          <li><strong>TBB → Mailbox：</strong> worker 线程调用 <code>Post()</code> 后，notify_cb_ 是否被正确触发？</li>
+          <li><strong>Mailbox → uvw：</strong> <code>PostToLoop</code> 是否将 <code>DrainAll</code> 正确调度到 loop 线程？</li>
+          <li><strong>uvw → BT：</strong> <code>EmitWakeup</code> 是否使 BT tick 重新推进，并在 <code>onRunning</code> 中看到结果？</li>
+          <li><strong>取消边界：</strong> <code>CancelJob</code> 触发令牌后，worker 是否安全退出？Mailbox 中是否留有脏状态？</li>
+        </ul>
+
+        <h3>最小跨库测试（<code>test_cross_library_integration.cpp</code>）</h3>
+        <pre>// 测试覆盖：TbbJobExecutor ↔ DefaultResultMailbox ↔ UvwEventLoopRuntime
+//
+// 验证：提交 TBB 任务 → 结果写入 Mailbox → uvw PostToLoop 触发 DrainAll
+//        → Mailbox::Peek 返回正确结果
+
+TEST(CrossLibIntegration, JobResultDeliveredViaEventLoop) {
+  auto event_loop = std::make_shared&lt;UvwEventLoopRuntime&gt;();
+  event_loop-&gt;Start();
+
+  TbbJobExecutor executor;
+
+  std::atomic&lt;bool&gt; drained{false};
+
+  // 注入：TBB 完成 → PostToLoop → DrainAll
+  executor.SetWakeupCallback([&amp;]() {
+    event_loop-&gt;PostToLoop([&amp;]() {
+      executor.Mailbox().DrainAll([&amp;](const JobResult&amp; r) {
+        // 验证结果
+        EXPECT_TRUE(r.succeeded);
+        drained.store(true);
+      });
+    });
+  });
+
+  // 提交任务
+  JobDescriptor desc;
+  desc.task = [](CancellationTokenPtr, JobResult&amp; out) {
+    out.succeeded = true;
+  };
+  executor.Submit(std::move(desc));
+
+  // 等待结果到达 loop 线程
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!drained.load() &amp;&amp; std::chrono::steady_clock::now() &lt; deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  EXPECT_TRUE(drained.load());
+  event_loop-&gt;Stop();
+}</pre>
+
+        <div class="callout">此测试不依赖 BT 层，只验证 compute_runtime ↔ async_runtime 的交互边界。这是最容易被忽略、但最容易在集成时出错的边界。</div>
+
+        <h3>取消边界测试要点</h3>
+        <ul>
+          <li>提交任务后立即 <code>Cancel()</code>，验证 worker 提前退出（<code>token->IsCancelled()</code> 为 true）。</li>
+          <li>取消后验证 <code>Mailbox::Peek(job_id)</code> 的行为（可能有结果、可能无结果）。</li>
+          <li><code>Discard(job_id)</code> 在 BT halt 路径中确保不留脏状态。</li>
+        </ul>
+      </section>
+
+      <!-- ── Deployment ─────────────────────────────────────────────────── -->
+      <section id="deployment">
+        <h2>开发与部署建议</h2>
+        <h3>开发阶段建议</h3>
+        <ul>
+          <li>第一阶段：单实体、单树、单异步动作，先验证 TBB ↔ Mailbox ↔ uvw 边界正确。</li>
+          <li>第二阶段：引入多实体、多 arena、真实总线接入（<code>ICommandBus</code>）。</li>
+          <li>第三阶段：日志、性能采样、Groot2 回放工具接入。</li>
+        </ul>
+
+        <h3>部署建议</h3>
+        <ul>
+          <li><strong>开发调试版：</strong>单进程，便于断点和回放。</li>
+          <li><strong>联调版：</strong>行为运行时进程与仿真宿主分进程，通过 bus / TCP / pipe 对接（<code>IBusAdapter</code>）。</li>
+          <li><strong>正式部署：</strong>根据 CPU 核心和 NUMA 情况配置 <code>ArenaConfig</code> 并发数，uvw loop 通常保持少量实例。</li>
+        </ul>
+
+        <h3>观测指标</h3>
+        <ul>
+          <li>每帧 tick 耗时（BT Runtime）</li>
+          <li>每实体行为树 tick 耗时</li>
+          <li>TBB 队列长度（<code>IJobExecutor::PendingJobCount()</code>）、任务完成延迟</li>
+          <li>uvw loop PostToLoop 队列积压、async 唤醒次数</li>
+          <li>超时率、取消率、失败原因分布（<code>JobResult::error_message</code>）</li>
+          <li>GoogleTest 回归套件通过率</li>
+        </ul>
+      </section>
+
+      <!-- ── Pitfalls ────────────────────────────────────────────────────── -->
+      <section id="pitfalls">
+        <h2>常见误区与规避</h2>
+        <h3>误区 1：在 BehaviorTree.CPP 的 <code>tick()</code> 中直接做长时间计算</h3>
+        <p>后果是整棵树阻塞，反应性下降。正确做法是通过 <code>StatefulActionNode</code> + <code>IAsyncActionContext::SubmitCpuJob()</code> 把工作外包到 TBB。</p>
+
+        <h3>误区 2：把 libuv threadpool 当成 TBB 平替</h3>
+        <p>libuv 的 threadpool 是全局共享池（默认 4 线程），适合桥接阻塞库，不适合做主 CPU 执行层。</p>
+
+        <h3>误区 3：让 TBB worker 线程直接修改黑板或树状态</h3>
+        <p>这会把行为语义与并发耦合，调试难度急剧上升。正确模式是 <code>JobResult → Mailbox::Post → PostToLoop → DrainAll → BT tick → onRunning 读取</code>。</p>
+
+        <h3>误区 4：把 uvw 误认为"比 libuv 更多功能"</h3>
+        <p>uvw 的价值主要在 C++ 包装与资源管理体验，不会替你设计线程模型。<code>UvwEventLoopRuntime</code> 在其之上提供了 <code>PostToLoop</code> 的队列化语义，这才是跨线程通信的关键。</p>
+
+        <h3>误区 5：只写单元测试，不写跨库交互边界测试</h3>
+        <p>本项目的主要风险在 TBB ↔ Mailbox ↔ uvw 的联动边界，必须通过 <code>test_cross_library_integration.cpp</code> 覆盖，而不是只测单个函数。</p>
+
+        <h3>误区 6：BT 节点直接持有 TBB 或 uvw 原始对象</h3>
+        <p>所有节点应只依赖 <code>IAsyncActionContext</code> 接口。这既保证可测试性（注入 mock），也避免节点与库版本绑定。</p>
+      </section>
+
+      <!-- ── Changelog ──────────────────────────────────────────────────── -->
+      <section id="changelog">
+        <h2>文档版本历史</h2>
+        <table>
+          <thead><tr><th>版本</th><th>日期</th><th>变更说明</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>v2.0.0</code></td>
+              <td>2026-03-15</td>
+              <td>
+                <ul>
+                  <li>移除领域特定术语，改为通用描述（"后端系统" / "应用实体"）</li>
+                  <li>全面同步实际代码结构：接口名、实现类名、模块目录与 CMake 目标</li>
+                  <li>新增"实际模块结构与接口"章节，列出所有公开接口与数据类型</li>
+                  <li>新增"跨库交互边界与测试"章节，补充 <code>test_cross_library_integration.cpp</code> 说明</li>
+                  <li>更新代码示例为真实接口（<code>IAsyncActionContext</code>、<code>TbbJobExecutor</code>、<code>UvwEventLoopRuntime</code>）</li>
+                  <li>CMake 示例更新为 <code>sim_behavior v0.1.0</code> 实际目标名</li>
+                  <li>增加文档版本栏（version bar）</li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <td><code>v1.0.0</code></td>
+              <td>2025-xx-xx</td>
+              <td>初始版本，基于 BehaviorTree.CPP + oneTBB + libuv/uvw + GoogleTest 工程接入规范整理</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ── Refs ───────────────────────────────────────────────────────── -->
+      <section id="refs">
+        <h2>参考资料</h2>
+        <ol class="small">
+          <li>BehaviorTree.CPP 官方站点与 4.x 文档：异步动作、Reactive/Asynchronous 行为、教程与框架总览。</li>
+          <li>BehaviorTree.CPP 发布信息：ROS Index 与 Conan Center 中的 4.9.0 包信息。</li>
+          <li>oneTBB 官方规范：<code>task_arena</code> 类文档与注意事项。</li>
+          <li>libuv 官方文档：Overview、threadpool、timer、async 等模块。</li>
+          <li>uvw 官方 GitHub README：header-only / static 模式、版本绑定规则、libuv 依赖关系。</li>
+          <li>GoogleTest 官方文档：Quickstart with CMake、Primer、Assertions Reference。</li>
+          <li>本项目源码：<code>include/sim_bt/</code>（公开接口）、<code>src/</code>（具体实现）。</li>
+        </ol>
+        <p class="footer">说明：这份文档偏工程使用手册，示例代码以结构表达和接入逻辑为主。实施时应以 <code>cmake/Dependencies.cmake</code> 中锁定的版本和导出目标名为准，再做本地编译校验。</p>
+      </section>
+
+    </main>
+  </div>
+</body>
+</html>
