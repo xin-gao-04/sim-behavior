@@ -216,7 +216,7 @@
         <p>这份文档面向 <strong>sim_behavior</strong> 工程的所有贡献者。目标不是把 API 简单抄一遍，而是把这五个库在当前架构中的职责、常用接口、调用顺序、接入方式和工程边界整理成一份可实施的使用手册。</p>
         <p>文档基于项目 <code>v0.1.0</code> 的实际代码（公开接口位于 <code>include/sim_bt/</code>，具体实现位于 <code>src/</code>），优先反映已落地的接口约定；官方文档作为权威参考，所有接口以实际编译版本为准。</p>
         <div>
-          <span class="badge">C++20</span>
+          <span class="badge">C++17</span>
           <span class="badge">后端架构导向</span>
           <span class="badge">可直接纳入工程规范</span>
           <span class="badge badge-green">通用工具仓库</span>
@@ -297,7 +297,7 @@
         <pre>cmake_minimum_required(VERSION 3.24)
 project(sim_behavior VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 三方依赖通过 cmake/Dependencies.cmake 统一引入（本地 zip 离线部署）

@@ -1,6 +1,6 @@
 # sim-behavior
 
-陆军仿真系统行为树后端模块。
+通用行为树后端模块。
 
 基于 **BehaviorTree.CPP v4 + oneTBB + uvw** 三层执行模型，
 实现高性能、可维护的多实体行为树运行时。
@@ -128,11 +128,12 @@ sim-behavior/
 │   ├── adapters/                 InProcessCommandBus
 │   ├── bt_nodes/                 AsyncActionBase 实现
 │   └── sim_host/                 SimHostApp + main.cpp（进程入口）
-├── tests/                        GoogleTest 单元测试
-│   ├── test_cancellation_token.cpp
-│   ├── test_result_mailbox.cpp
-│   ├── test_entity_context.cpp
-│   └── test_async_action_base.cpp
+├── tests/                        GoogleTest 测试套件
+│   ├── test_cancellation_token.cpp          # ICancellationToken 单元测试
+│   ├── test_result_mailbox.cpp              # IResultMailbox 单元测试
+│   ├── test_entity_context.cpp              # IEntityContext 单元测试
+│   ├── test_async_action_base.cpp           # AsyncActionBase 单元测试
+│   └── test_cross_library_integration.cpp  # 跨库边界集成测试（TBB↔Mailbox↔uvw）
 ├── scripts/
 │   └── vendor-deps.sh            联网机器一键下载所有 zip 依赖
 ├── docs/design/
@@ -165,14 +166,14 @@ class HasTargetCondition : public BT::ConditionNode {
 ### CPU 密集型异步动作节点
 
 ```cpp
-class PathPlanAction : public sim_bt::AsyncActionBase {
+class ComputeAction : public sim_bt::AsyncActionBase {
  public:
   sim_bt::NodeStatus OnStart() override {
     job_id_ = Ctx().SubmitCpuJob(
       sim_bt::JobPriority::kNormal,
       [](sim_bt::CancellationTokenPtr tok, sim_bt::JobResult& out) {
         if (tok->IsCancelled()) return;
-        // ← TBB worker 线程：执行路径规划
+        // TBB worker 线程：CPU 密集计算（路径规划、评分等）
         out.succeeded = true;
       }
     )->JobId();
@@ -217,6 +218,6 @@ class PathPlanAction : public sim_bt::AsyncActionBase {
 
 | 平台 | 编译器 | 状态 |
 |------|--------|------|
-| macOS 14 (ARM64) | AppleClang 17 | ✅ 16/16 tests pass |
+| macOS 14 (ARM64) | AppleClang 17 | ✅ 21/21 tests pass |
 | Ubuntu 22.04 | GCC 13 | 🏗 待验证 |
 | Windows Server 2022 | MSVC 2022 | 🏗 待验证 |

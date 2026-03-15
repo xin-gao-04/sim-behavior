@@ -188,11 +188,11 @@ sequenceDiagram
 
 | 节点类型 | 场景示例 | 实现基类 | 执行域 | 备注 |
 |----------|----------|----------|--------|------|
-| 同步条件节点 | `HasTarget`, `IsAmmoSufficient` | `BT::ConditionNode` | BT Tick | 必须微秒级完成，不走 TBB/uvw |
+| 同步条件节点 | `HasTarget`, `CheckResource` | `BT::ConditionNode` | BT Tick | 必须微秒级完成，不走 TBB/uvw |
 | 同步瞬时动作 | `SetFlag`, `ResetTimer` | `BT::SyncActionNode` | BT Tick | 同上 |
-| CPU 密集异步动作 | `PathPlan`, `ThreatAssess` | `AsyncActionBase` | TBB Compute | `OnStart` 提交 arena 任务 |
-| I/O 等待型动作 | `WaitBusEvent`, `WaitCommand` | `AsyncActionBase` | uvw Event | `OnStart` 注册 loop handle |
-| 混合型（超时保护） | `PathPlanWithTimeout` | `AsyncActionBase` | TBB + uvw | TBB 算，uvw 超时 |
+| CPU 密集异步动作 | `ComputeAction`, `EvalAction` | `AsyncActionBase` | TBB Compute | `OnStart` 提交 arena 任务 |
+| I/O 等待型动作 | `WaitBusEvent`, `WaitReply` | `AsyncActionBase` | uvw Event | `OnStart` 注册 loop handle |
+| 混合型（超时保护） | `ComputeWithTimeout` | `AsyncActionBase` | TBB + uvw | TBB 算，uvw 超时 |
 
 ### AsyncActionBase 回调转发
 
@@ -220,7 +220,7 @@ graph LR
         AL["arena_low_\nconcurrency = 2\nJobPriority::kLow"]
     end
 
-    AH -->|"火力分配 / 威胁评估"| MB["DefaultResultMailbox"]
+    AH -->|"高优先级决策计算"| MB["DefaultResultMailbox"]
     AN -->|"路径规划 / 地形查询"| MB
     AL -->|"预取 / 后台统计"| MB
     MB -->|"notify_cb"| UVW["UvwEventLoopRuntime"]
@@ -228,8 +228,8 @@ graph LR
 
 | Arena | `JobPriority` | 并发数 | 典型任务 |
 |-------|--------------|--------|----------|
-| `arena_high_` | `kHigh` | 2 | 火力分配、威胁评估（战术决策） |
-| `arena_normal_` | `kNormal` | 4 | 路径规划、地形查询、几何计算 |
+| `arena_high_` | `kHigh` | 2 | 高优先级决策计算（时延敏感） |
+| `arena_normal_` | `kNormal` | 4 | 路径规划、几何计算、地形查询 |
 | `arena_low_` | `kLow` | 2 | 预取、后台统计、离线缓存 |
 
 > **注意**：`reserved_for_masters` 不要配置过高，否则 `enqueue()` 的调度保证会失效（oneTBB 官方文档警告）。
@@ -318,11 +318,12 @@ sim-behavior/
 │   ├── bt_nodes/                 AsyncActionBase 实现
 │   └── sim_host/                 SimHostApp + main.cpp（进程入口）
 │
-├── tests/                        GoogleTest 单元测试
-│   ├── test_cancellation_token.cpp
-│   ├── test_result_mailbox.cpp
-│   ├── test_entity_context.cpp
-│   └── test_async_action_base.cpp
+├── tests/                        GoogleTest 测试套件
+│   ├── test_cancellation_token.cpp          # ICancellationToken 单元测试
+│   ├── test_result_mailbox.cpp              # IResultMailbox 单元测试
+│   ├── test_entity_context.cpp              # IEntityContext 单元测试
+│   ├── test_async_action_base.cpp           # AsyncActionBase 单元测试
+│   └── test_cross_library_integration.cpp  # 跨库边界集成测试（TBB↔Mailbox↔uvw）
 │
 ├── scripts/
 │   └── vendor-deps.sh            联网机器一键下载所有 zip 依赖
@@ -353,7 +354,7 @@ sim-behavior/
 | BehaviorTree.CPP | 4.9.0 | `BT::behaviortree_cpp` | [GitHub](https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.9.0.zip) |
 | GoogleTest | v1.16.0 | `GTest::gtest` | [GitHub](https://github.com/google/googletest/archive/refs/tags/v1.16.0.zip) |
 
-CMake 最低版本：**3.24** | C++ 标准：**17**
+CMake 最低版本：**3.24** | C++ 标准：**C++17**
 
 ---
 
@@ -363,7 +364,7 @@ CMake 最低版本：**3.24** | C++ 标准：**17**
 
 目标：单实体、单树、一个 CPU 异步节点跑通完整链路。
 
-- [ ] `PathPlanAction::OnStart()` 提交 TBB 任务
+- [ ] `ComputeAction::OnStart()` 提交 TBB 任务
 - [ ] TBB worker 写入 `ResultMailbox`
 - [ ] uvw `async_handle` 唤醒 BT re-tick
 - [ ] `OnRunning()` 消费结果，返回 `SUCCESS`
