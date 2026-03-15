@@ -25,3 +25,13 @@ cmake_install.cmake
 *.ilk
 *.exp
 *.lib
+
+# third_party: 跟踪 .zip 源码包，忽略自动解压目录
+# corekit 是 git submodule，不在此列
+third_party/oneTBB/
+third_party/libuv/
+third_party/uvw/
+third_party/BehaviorTree.CPP/
+third_party/googletest/
+# 解压时产生的临时目录（_unzip_dep 内部使用）
+third_party/*__tmp_extract/

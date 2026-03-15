@@ -1,70 +1,116 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependencies.cmake
 #
-# 所有依赖均从源码编译进项目，不依赖系统安装包。
-# 适合跨平台部署和内网离线环境。
+# 所有依赖均从源码编译，永远不依赖系统安装包。
 #
-# 依赖引入策略（优先级从高到低）：
-#   1. third_party/<dep>/ 子目录存在且有 CMakeLists.txt
-#      → 直接 add_subdirectory（git submodule 或手动 vendor）
-#   2. SIMBEHAVIOR_<DEP>_SOURCE_DIR 缓存变量被用户手动指定
-#      → 使用指定路径（适合内网离线环境）
-#   3. FetchContent 在线下载
-#      → 仅当前两项均不可用时触发
+# 依赖引入优先级（从高到低）：
+#   1. third_party/<dep>/  目录已存在且含 CMakeLists.txt
+#      → 直接使用（已解压 or git submodule）
+#   2. third_party/<dep>.zip  文件存在
+#      → 自动解压到 third_party/<dep>/ 后使用
+#      → zip 文件需事先放入仓库（内网离线首选方案）
+#   3. FetchContent 在线拉取
+#      → 仅当前两项均不可用时触发（需要网络）
 #
-# 内网离线部署方式（两选一）：
-#   A) git submodule（推荐，一次 clone 全部携带）：
-#      git submodule add <mirror-url> third_party/oneTBB
-#      git submodule add <mirror-url> third_party/libuv
-#      git submodule add <mirror-url> third_party/uvw
-#      git submodule add <mirror-url> third_party/BehaviorTree.CPP
-#      git submodule add <mirror-url> third_party/googletest
-#
-#   B) 手动指定路径（已有本地镜像目录时）：
-#      cmake -B build \
-#        -DSIMBEHAVIOR_TBB_SOURCE_DIR=/mirrors/oneTBB     \
-#        -DSIMBEHAVIOR_LIBUV_SOURCE_DIR=/mirrors/libuv    \
-#        -DSIMBEHAVIOR_UVW_SOURCE_DIR=/mirrors/uvw        \
-#        -DSIMBEHAVIOR_BTCPP_SOURCE_DIR=/mirrors/BT.CPP  \
-#        -DSIMBEHAVIOR_GTEST_SOURCE_DIR=/mirrors/gtest
+# 内网部署流程（无需修改 CMake）：
+#   1. 在有网机器运行 scripts/vendor-deps.sh，生成各 .zip
+#   2. 将 .zip 文件提交到仓库 third_party/ 目录
+#   3. 内网机器直接 cmake -B build，自动解压并编译
 # ─────────────────────────────────────────────────────────────────────────────
 
+cmake_minimum_required(VERSION 3.24)  # file(ARCHIVE_EXTRACT) 需要 3.18+
 include(FetchContent)
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 辅助宏：_dep_add — 统一 submodule / 本地路径 / FetchContent 三种模式   ║
+# ║  辅助函数：_unzip_dep                                                   ║
+# ║                                                                          ║
+# ║  将 third_party/<dep>.zip 解压到 third_party/<dep>/。                   ║
+# ║  GitHub zip 顶层通常含一个 <repo>-<tag>/ 子目录，函数自动处理。         ║
+# ║  已存在目录则跳过，保证幂等。                                             ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-# 参数：
-#   NAME        逻辑名（用于 FetchContent）
-#   VENDOR_DIR  third_party/ 下的子目录名
-#   SOURCE_VAR  用户可覆盖的 CMake 缓存路径变量名
-#   GIT_REPO    FetchContent GIT_REPOSITORY
-#   GIT_TAG     FetchContent GIT_TAG
-#   OPTS        传入子项目的选项，形如 "KEY=val" 列表
-macro(_dep_add _name _vendor_dir _source_var _git_repo _git_tag)
-  # 处理可变参数 OPTS
-  set(_dep_opts ${ARGN})
-  foreach(_o IN LISTS _dep_opts)
+function(_unzip_dep dep_name zip_path dest_dir)
+  # 已解压则跳过
+  if(EXISTS "${dest_dir}/CMakeLists.txt")
+    return()
+  endif()
+  if(NOT EXISTS "${zip_path}")
+    return()
+  endif()
+
+  message(STATUS "[sim-behavior] Extracting ${dep_name}: ${zip_path} → ${dest_dir}")
+
+  # 解压到临时目录，避免部分解压污染目标目录
+  set(_tmp "${dest_dir}__tmp_extract")
+  file(REMOVE_RECURSE "${_tmp}")
+  file(MAKE_DIRECTORY "${_tmp}")
+
+  # file(ARCHIVE_EXTRACT) 跨平台，CMake 3.18+；支持 .zip / .tar.gz
+  file(ARCHIVE_EXTRACT INPUT "${zip_path}" DESTINATION "${_tmp}")
+
+  # GitHub zip 通常解压为单个顶层子目录（如 oneTBB-v2022.0.0/）
+  # 若如此，将该子目录直接重命名为 dest_dir；否则将整个 tmp 重命名
+  file(GLOB _top_entries LIST_DIRECTORIES true "${_tmp}/*")
+  list(LENGTH _top_entries _top_count)
+
+  if(_top_count EQUAL 1)
+    list(GET _top_entries 0 _single)
+    if(IS_DIRECTORY "${_single}")
+      file(RENAME "${_single}" "${dest_dir}")
+      file(REMOVE_RECURSE "${_tmp}")
+      message(STATUS "[sim-behavior] ${dep_name}: extracted (single root dir) → ${dest_dir}")
+      return()
+    endif()
+  endif()
+
+  # 多个顶层条目（平铺 zip）：直接使用 tmp 目录
+  file(RENAME "${_tmp}" "${dest_dir}")
+  message(STATUS "[sim-behavior] ${dep_name}: extracted (flat zip) → ${dest_dir}")
+endfunction()
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  辅助宏：_dep_add                                                       ║
+# ║                                                                          ║
+# ║  统一三种来源：已解压目录 / .zip 自动解压 / FetchContent 在线拉取       ║
+# ║                                                                          ║
+# ║  调用格式：                                                              ║
+# ║    _dep_add(<name> <vendor_dir> <git_repo> <git_tag>                    ║
+# ║             [OPT "KEY=val" ...])                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+macro(_dep_add _name _vendor_dir _git_repo _git_tag)
+  # 先处理附加的 CMake 选项（设置 CACHE 变量影响子项目）
+  foreach(_o IN LISTS ARGN)
     string(REPLACE "=" ";" _kv "${_o}")
     list(GET _kv 0 _k)
     list(GET _kv 1 _v)
     set(${_k} "${_v}" CACHE BOOL "" FORCE)
   endforeach()
 
-  set(_vendor_path "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}")
+  set(_dep_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}")
+  set(_dep_zip "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}.zip")
 
-  if(EXISTS "${_vendor_path}/CMakeLists.txt")
-    message(STATUS "[sim-behavior] ${_name}: submodule at ${_vendor_path}")
-    add_subdirectory("${_vendor_path}"
+  # 优先级 1：目录已存在
+  if(EXISTS "${_dep_dir}/CMakeLists.txt")
+    message(STATUS "[sim-behavior] ${_name}: using ${_dep_dir}")
+    add_subdirectory("${_dep_dir}"
       "${CMAKE_BINARY_DIR}/third_party/${_vendor_dir}" EXCLUDE_FROM_ALL)
 
-  elseif(${_source_var} AND EXISTS "${${_source_var}}/CMakeLists.txt")
-    message(STATUS "[sim-behavior] ${_name}: local path ${${_source_var}}")
-    add_subdirectory("${${_source_var}}"
-      "${CMAKE_BINARY_DIR}/third_party/${_vendor_dir}" EXCLUDE_FROM_ALL)
+  # 优先级 2：zip 存在，自动解压
+  elseif(EXISTS "${_dep_zip}")
+    _unzip_dep("${_name}" "${_dep_zip}" "${_dep_dir}")
+    if(EXISTS "${_dep_dir}/CMakeLists.txt")
+      add_subdirectory("${_dep_dir}"
+        "${CMAKE_BINARY_DIR}/third_party/${_vendor_dir}" EXCLUDE_FROM_ALL)
+    else()
+      message(FATAL_ERROR
+        "[sim-behavior] ${_name}: zip extracted but CMakeLists.txt not found in ${_dep_dir}\n"
+        "  请检查 zip 内容是否完整，或重新打包。")
+    endif()
 
+  # 优先级 3：FetchContent 在线拉取
   else()
-    message(STATUS "[sim-behavior] ${_name}: FetchContent ${_git_repo} @ ${_git_tag}")
+    message(STATUS "[sim-behavior] ${_name}: no zip found, FetchContent ${_git_repo} @ ${_git_tag}")
+    message(STATUS "[sim-behavior]   提示：可将 zip 放入 third_party/${_vendor_dir}.zip 以实现离线编译")
     FetchContent_Declare(${_name}
       GIT_REPOSITORY "${_git_repo}"
       GIT_TAG        "${_git_tag}"
@@ -72,20 +118,29 @@ macro(_dep_add _name _vendor_dir _source_var _git_repo _git_tag)
     )
     FetchContent_MakeAvailable(${_name})
   endif()
+
+  unset(_dep_dir)
+  unset(_dep_zip)
 endmacro()
 
-# header-only 变体（只需 populate 源码目录，不 add_subdirectory）
-macro(_dep_headers _name _vendor_dir _source_var _git_repo _git_tag)
-  set(_vendor_path "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}")
 
-  if(EXISTS "${_vendor_path}")
-    set(_${_name}_src "${_vendor_path}")
-    message(STATUS "[sim-behavior] ${_name}: submodule headers at ${_vendor_path}")
-  elseif(${_source_var} AND EXISTS "${${_source_var}}")
-    set(_${_name}_src "${${_source_var}}")
-    message(STATUS "[sim-behavior] ${_name}: local headers at ${${_source_var}}")
+# header-only 变体（不需要 add_subdirectory，只需源码头文件目录）
+macro(_dep_headers _name _vendor_dir _git_repo _git_tag)
+  set(_dep_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}")
+  set(_dep_zip "${CMAKE_CURRENT_SOURCE_DIR}/third_party/${_vendor_dir}.zip")
+
+  if(EXISTS "${_dep_dir}/src")
+    # 已解压（src/ 是 uvw 的头文件入口目录）
+    set(_${_name}_src "${_dep_dir}")
+    message(STATUS "[sim-behavior] ${_name}: using vendored headers ${_dep_dir}")
+
+  elseif(EXISTS "${_dep_zip}")
+    _unzip_dep("${_name}" "${_dep_zip}" "${_dep_dir}")
+    set(_${_name}_src "${_dep_dir}")
+    message(STATUS "[sim-behavior] ${_name}: extracted headers ${_dep_dir}")
+
   else()
-    message(STATUS "[sim-behavior] ${_name}: FetchContent headers ${_git_repo} @ ${_git_tag}")
+    message(STATUS "[sim-behavior] ${_name}: no zip found, FetchContent ${_git_repo} @ ${_git_tag}")
     FetchContent_Declare(${_name}
       GIT_REPOSITORY "${_git_repo}"
       GIT_TAG        "${_git_tag}"
@@ -97,11 +152,14 @@ macro(_dep_headers _name _vendor_dir _source_var _git_repo _git_tag)
     endif()
     set(_${_name}_src "${${_name}_SOURCE_DIR}")
   endif()
+
+  unset(_dep_dir)
+  unset(_dep_zip)
 endmacro()
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  0. corekit  (git submodule — 必须，不可 FetchContent)                  ║
+# ║  0. corekit  (git submodule — 必须，不支持 zip / FetchContent)          ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/corekit/CMakeLists.txt")
   message(FATAL_ERROR
@@ -113,47 +171,41 @@ set(COREKIT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/corekit"
   "${CMAKE_BINARY_DIR}/third_party/corekit" EXCLUDE_FROM_ALL)
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  1. oneTBB  (TBB::tbb + TBB::tbbmalloc，从源码编译)                    ║
-# ║                                                                          ║
-# ║  同一个 oneTBB 源码树提供两个独立目标：                                  ║
-# ║    TBB::tbb       — task_arena，sim-behavior 用于 CPU 调度              ║
-# ║    TBB::tbbmalloc — 可扩展分配器，corekit 可选用作内存后端              ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-set(SIMBEHAVIOR_TBB_SOURCE_DIR "" CACHE PATH
-  "oneTBB 本地源码目录（离线部署，优先级低于 third_party/oneTBB）")
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  1. oneTBB  (TBB::tbb + TBB::tbbmalloc)                                ║
+# ║                                                                          ║
+# ║  zip 打包来源：                                                          ║
+# ║    https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.0.0.zip ║
+# ║  放置为：third_party/oneTBB.zip                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET TBB::tbb)
-  _dep_add(oneTBB oneTBB SIMBEHAVIOR_TBB_SOURCE_DIR
+  _dep_add(oneTBB oneTBB
     https://github.com/oneapi-src/oneTBB.git v2022.0.0
     "TBB_TEST=OFF" "TBB_STRICT=OFF" "TBB_EXAMPLES=OFF" "TBBMALLOC_BUILD=ON"
   )
 endif()
-
 if(NOT TARGET TBB::tbb)
   message(FATAL_ERROR
-    "[sim-behavior] TBB::tbb not available.\n"
-    "  Add submodule: git submodule add <url> third_party/oneTBB\n"
-    "  Or set: -DSIMBEHAVIOR_TBB_SOURCE_DIR=<path>")
+    "[sim-behavior] TBB::tbb not found after oneTBB setup.\n"
+    "  请将 third_party/oneTBB.zip 加入仓库，或确保网络可访问 GitHub。")
 endif()
 message(STATUS "[sim-behavior] TBB::tbb ready")
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  2. libuv  (从源码编译，uv_a 静态库)                                    ║
-# ╠══════════════════════════════════════════════════════════════════════════╣
-# ║  静态库名：uv_a（libuv CMake 构建的标准目标名）                          ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-set(SIMBEHAVIOR_LIBUV_SOURCE_DIR "" CACHE PATH
-  "libuv 本地源码目录（离线部署）")
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  2. libuv  (uv_a 静态库)                                                ║
+# ║                                                                          ║
+# ║  zip 打包来源：                                                          ║
+# ║    https://github.com/libuv/libuv/archive/refs/tags/v1.48.0.zip         ║
+# ║  放置为：third_party/libuv.zip                                          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET uv_a AND NOT TARGET uv)
-  _dep_add(libuv libuv SIMBEHAVIOR_LIBUV_SOURCE_DIR
+  _dep_add(libuv libuv
     https://github.com/libuv/libuv.git v1.48.0
     "LIBUV_BUILD_TESTS=OFF" "LIBUV_BUILD_BENCH=OFF"
   )
 endif()
-
-# 统一别名 uv::uv
 if(NOT TARGET uv::uv)
   if(TARGET uv_a)
     add_library(uv::uv ALIAS uv_a)
@@ -162,20 +214,21 @@ if(NOT TARGET uv::uv)
   else()
     message(FATAL_ERROR
       "[sim-behavior] libuv target not found.\n"
-      "  Add submodule: git submodule add <url> third_party/libuv\n"
-      "  Or set: -DSIMBEHAVIOR_LIBUV_SOURCE_DIR=<path>")
+      "  请将 third_party/libuv.zip 加入仓库，或确保网络可访问 GitHub。")
   endif()
 endif()
 message(STATUS "[sim-behavior] libuv (uv::uv) ready")
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  3. uvw  (header-only C++17 包装，只需头文件 src/ 目录)                 ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-set(SIMBEHAVIOR_UVW_SOURCE_DIR "" CACHE PATH
-  "uvw 本地源码目录（离线部署）")
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  3. uvw  (header-only C++17 包装)                                       ║
+# ║                                                                          ║
+# ║  zip 打包来源：                                                          ║
+# ║    https://github.com/skypjack/uvw/archive/refs/tags/v3.4.0_libuv_v1.48.zip ║
+# ║  放置为：third_party/uvw.zip                                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET uvw::uvw)
-  _dep_headers(uvw uvw SIMBEHAVIOR_UVW_SOURCE_DIR
+  _dep_headers(uvw uvw
     https://github.com/skypjack/uvw.git v3.4.0_libuv_v1.48
   )
   add_library(_simbehavior_uvw_iface INTERFACE)
@@ -186,23 +239,21 @@ if(NOT TARGET uvw::uvw)
 endif()
 message(STATUS "[sim-behavior] uvw::uvw ready")
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  4. BehaviorTree.CPP v4  (从源码编译)                                   ║
-# ╠══════════════════════════════════════════════════════════════════════════╣
-# ║  CMake 目标：behaviortree_cpp                                            ║
-# ║  别名：BT::behaviortree_cpp                                              ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-set(SIMBEHAVIOR_BTCPP_SOURCE_DIR "" CACHE PATH
-  "BehaviorTree.CPP 本地源码目录（离线部署）")
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  4. BehaviorTree.CPP v4                                                 ║
+# ║                                                                          ║
+# ║  zip 打包来源：                                                          ║
+# ║    https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.6.2.zip ║
+# ║  放置为：third_party/BehaviorTree.CPP.zip                               ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET behaviortree_cpp AND NOT TARGET BT::behaviortree_cpp)
-  _dep_add(behaviortree_cpp BehaviorTree.CPP SIMBEHAVIOR_BTCPP_SOURCE_DIR
+  _dep_add(behaviortree_cpp BehaviorTree.CPP
     https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.6.2
     "BTCPP_UNIT_TESTS=OFF" "BTCPP_BUILD_TOOLS=OFF"
     "BTCPP_EXAMPLES=OFF"   "BUILD_TESTING=OFF"
   )
 endif()
-
 if(NOT TARGET BT::behaviortree_cpp)
   if(TARGET behaviortree_cpp::behaviortree_cpp)
     add_library(BT::behaviortree_cpp ALIAS behaviortree_cpp::behaviortree_cpp)
@@ -211,24 +262,23 @@ if(NOT TARGET BT::behaviortree_cpp)
   else()
     message(FATAL_ERROR
       "[sim-behavior] BehaviorTree.CPP target not found.\n"
-      "  Add submodule: git submodule add <url> third_party/BehaviorTree.CPP\n"
-      "  Or set: -DSIMBEHAVIOR_BTCPP_SOURCE_DIR=<path>")
+      "  请将 third_party/BehaviorTree.CPP.zip 加入仓库，或确保网络可访问 GitHub。")
   endif()
 endif()
 message(STATUS "[sim-behavior] BT::behaviortree_cpp ready")
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  5. GoogleTest  (从源码编译，仅测试构建)                                 ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-if(SIMBEHAVIOR_BUILD_TESTS)
-  set(SIMBEHAVIOR_GTEST_SOURCE_DIR "" CACHE PATH
-    "googletest 本地源码目录（离线部署）")
 
-  if(NOT TARGET GTest::gtest)
-    _dep_add(googletest googletest SIMBEHAVIOR_GTEST_SOURCE_DIR
-      https://github.com/google/googletest.git v1.14.0
-      "INSTALL_GTEST=OFF" "BUILD_GMOCK=ON"
-    )
-  endif()
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  5. GoogleTest  (仅测试构建)                                             ║
+# ║                                                                          ║
+# ║  zip 打包来源：                                                          ║
+# ║    https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip   ║
+# ║  放置为：third_party/googletest.zip                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+if(SIMBEHAVIOR_BUILD_TESTS AND NOT TARGET GTest::gtest)
+  _dep_add(googletest googletest
+    https://github.com/google/googletest.git v1.14.0
+    "INSTALL_GTEST=OFF" "BUILD_GMOCK=ON"
+  )
   message(STATUS "[sim-behavior] GoogleTest ready")
 endif()
