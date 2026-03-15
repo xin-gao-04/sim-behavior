@@ -142,7 +142,380 @@ classDiagram
 
 ---
 
-## 5. 异步动作生命周期
+## 5. Tick 机制深析
+
+### 5.1 帧驱动：固定频率主循环
+
+Tick 的唯一驱动源是 `SimHostApp::TickLoop()`，在**主线程**以固定 20 Hz（50 ms/帧）循环：
+
+```cpp
+// sim_host_app.cpp — TickLoop 核心逻辑
+while (!stop_requested_) {
+    auto frame_start = steady_clock::now();
+    current_sim_time_ += 50;                      // 仿真时钟推进
+
+    // snapshot_provider_->Refresh(current_sim_time_); // 刷新全局快照
+    bt_runtime_->TickAll(current_sim_time_);       // ← 唯一触发点
+
+    auto elapsed = steady_clock::now() - frame_start;
+    sleep_for(50ms - elapsed);                    // 对齐到下一帧
+}
+```
+
+> 整个 BT 执行域（节点读写黑板、调用 `OnStart/OnRunning/OnHalted`）都在这个主线程内串行发生，**没有任何并发**。
+
+---
+
+### 5.2 TickAll 的两阶段设计
+
+`BtRuntimeImpl::TickAll` 每帧分两个阶段执行：
+
+```
+帧 N 的 TickAll:
+┌─────────────────────────────────────────────────────────────────────┐
+│ Phase 1 — 处理上帧异步完成的实体（优先唤醒）                          │
+│                                                                       │
+│   swap(wakeup_queue_, local)   ← 加锁取出，立即解锁                   │
+│   for each entity_id in local:                                        │
+│       TickEntityLocked(entity_id)   ← 立即 tick，让节点消费结果        │
+│                                                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│ Phase 2 — 常规全量 tick                                               │
+│                                                                       │
+│   lock(mu_)                                                           │
+│   for each (id, tree) in trees_:                                      │
+│       tree->Tick()              ← 包括 Phase 1 中已 tick 的实体        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**关键推论：在 wakeup_queue_ 里的实体，同一帧内会被 tick 两次。**
+
+- Phase 1 tick：让节点有机会消费刚到的结果，返回 SUCCESS/FAILURE
+- Phase 2 tick：若节点在 Phase 1 已完成（返回 S/F），树继续推进后续节点；若 Phase 1 仍 RUNNING，Phase 2 再次调用 `onRunning()`，结果一样，无副作用
+
+---
+
+### 5.3 StatefulActionNode 状态机（关键）
+
+`AsyncActionBase` 继承自 `BT::StatefulActionNode`。BT 库内部为每个节点维护 `status_` 字段，控制每帧调用哪个方法：
+
+```
+BT 库的 StatefulActionNode 调用逻辑（每次 tree.tickOnce() 时）：
+
+  if (status_ == IDLE):
+      status_ = onStart()       ← 首次 tick
+  elif (status_ == RUNNING):
+      status_ = onRunning()     ← 后续 tick
+  if (status_ != RUNNING):
+      onHalted() 不会自动调用（只有父节点主动 halt 时才调用）
+```
+
+**第二次 tick 到尚未完成的节点，会发生什么？**
+
+```
+帧 N：
+  onStart() → SubmitCpuJob() → active_handle_ 赋值 → 返回 RUNNING
+  BT 记录 status_ = RUNNING
+
+帧 N+1（TBB job 仍在执行）：
+  onRunning() → IsTimedOut()? 否 → OnRunning() → PeekResult() → nullopt
+  → 返回 RUNNING
+  ← 没有第二次 SubmitCpuJob，active_handle_ 不变
+```
+
+`onStart()` **只在节点从 IDLE 变为首次 tick 时调用一次**。只要 job 未完成，每帧都只调用 `onRunning()`，轮询 mailbox。不会出现重复提交 job 的情况。
+
+**同一实体多个异步节点同时 RUNNING 是否可能？**
+
+可能（`BT::Parallel` 节点可以让多个子节点同时处于 RUNNING 状态）。每个 `AsyncActionBase` 节点**持有独立的 `AsyncActionContextImpl` 实例**（包含各自的 `active_handle_` 和 `timed_out_`），因此：
+
+- 各节点各自提交独立 TBB job，job_id 不同
+- `DefaultResultMailbox::ready_` 以 `job_id` 为 key，各节点只读自己的
+- 没有队列阻塞，多个 job 真正并行执行于 TBB worker 线程池
+
+```
+AsyncActionContextImpl 的关键成员（每个节点独有）：
+  JobHandlePtr  active_handle_    ← 当前正在执行的 job 句柄
+  TimerHandlePtr timeout_handle_  ← 当前超时计时器
+  atomic<bool>  timed_out_        ← 超时标志
+```
+
+---
+
+## 6. 超时机制实现
+
+### 6.1 超时已内置于基类，子类无需手动检查
+
+`AsyncActionBase::onRunning()` 的实际代码：
+
+```cpp
+// async_action_base.cpp
+BT::NodeStatus AsyncActionBase::onRunning() {
+    if (ctx_->IsTimedOut()) {   // ← 基类先检查，子类 OnRunning() 甚至不需要管
+        OnHalted();             // ← 自动触发清理
+        return BT::NodeStatus::FAILURE;
+    }
+    NodeStatus s = OnRunning(); // ← 只有未超时时才调用子类逻辑
+    return static_cast<BT::NodeStatus>(s);
+}
+```
+
+树主动 halt 时也会自动取消计时器：
+
+```cpp
+void AsyncActionBase::onHalted() {
+    ctx_->CancelTimeout();  // ← 父节点取消时自动停计时器
+    OnHalted();
+}
+```
+
+### 6.2 超时的完整执行路径
+
+```
+[BT Tick Domain — 主线程]
+    OnStart() {
+        handle = ctx_->SubmitCpuJob(kNormal, my_task)
+        ctx_->StartTimeout(300ms)     ← 向 uvw 注册 300ms 单次定时器
+        return kRunning
+    }
+
+    ↓  StartTimeout 内部：
+    event_loop_->StartOneShotTimer(300ms, callback)
+    → PostToLoop([]{  创建 uvw::timer_handle, start(300ms, 0)  })
+    → post_async_->send()          ← 通知 uvw loop 线程去创建 timer
+
+[uvw Event Loop — 独立线程]
+    接收 post_async_ 信号 → DrainPostQueue()
+    → 在 loop 线程创建并启动 uvw::timer_handle
+
+    [300ms 后]
+    timer 触发回调：
+        timed_out_.store(true, release)      ← 设置原子标志
+        bt_runtime_->RequestWakeup(owner_)   ← 加入主线程 wakeup_queue_
+
+[BT Tick Domain — 下一帧]
+    TickAll Phase 1: 处理 wakeup_queue_，tick 该实体
+    → onRunning()
+    → IsTimedOut() → true
+    → OnHalted()       ← 子类清理（CancelJob 等）
+    → return FAILURE
+```
+
+### 6.3 CancelTimeout 必须通过 PostToLoop
+
+```cpp
+// async_action_context_impl.cpp
+void AsyncActionContextImpl::CancelTimeout() {
+    auto handle = timeout_handle_;
+    event_loop_->PostToLoop([handle]() {
+        handle->Cancel();          // ← 必须在 uvw loop 线程操作 timer handle
+    });
+    timeout_handle_.reset();
+}
+```
+
+`uvw::timer_handle` 是 libuv 资源，只能在创建它的 loop 线程上操作。直接跨线程调用 `Cancel()` 会导致 UB。`PostToLoop` 保证回调在 uvw 线程执行。
+
+---
+
+## 7. 黑板读写详解
+
+### 7.1 两套黑板，用途完全不同
+
+项目中存在**两套独立的"黑板"机制**，初学者容易混淆：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 第一套：BT::Blackboard（BehaviorTree.CPP 原生）                       │
+│                                                                       │
+│   - 每棵树一个实例，BT 工厂 createTree() 自动创建                     │
+│   - 节点通过 getInput<T>() / setOutput<T>() 访问                      │
+│   - 用途：节点间传递计算结果（如路径坐标传给下游节点）                  │
+│   - 生命周期：与 BT::Tree 实例相同                                     │
+│   - 线程安全：完全不安全，只能在 BT Tick Domain 访问                   │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ 第二套：EntityContext / GroupContext / WorldSnapshot（项目自定义）      │
+│                                                                       │
+│   - C++ 对象，IEntityContext 接口，key-value 存储                      │
+│   - 用途：跨帧持久状态（当前目标、行为标志、上一帧规划结果等）           │
+│   - 生命周期：与实体相同（跨多帧）                                     │
+│   - 线程安全：同样只在 BT Tick Domain 访问，TBB 禁止直接读写           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 线程安全规则（强制）
+
+```
+┌───────────────────┬──────────────────────┬──────────────────────────┐
+│ 操作              │ 允许的线程            │ 违规后果                  │
+├───────────────────┼──────────────────────┼──────────────────────────┤
+│ BT::Blackboard 读 │ 仅 BT Tick Domain    │ 数据竞争，UB              │
+│ BT::Blackboard 写 │ 仅 BT Tick Domain    │ 数据竞争，UB              │
+│ EntityContext 读写│ 仅 BT Tick Domain    │ 数据竞争，UB              │
+│ GroupContext 读写 │ 仅 BT Tick Domain    │ 数据竞争，UB              │
+│ WorldSnapshot 读  │ 仅 BT Tick Domain    │ 数据竞争，UB              │
+│ WorldSnapshot 写  │ 禁止（只读快照）      │ 设计违规                  │
+│ Mailbox::Post()   │ 任意线程（含 TBB）   │ 内部有锁，安全            │
+│ Mailbox::Peek()   │ 仅 BT Tick Domain    │ 数据竞争，UB              │
+└───────────────────┴──────────────────────┴──────────────────────────┘
+```
+
+**TBB worker 访问实体状态的唯一合法方式**：通过 `JobResult::payload`（`std::any`）携带计算结果，写入 mailbox，由 BT Tick Domain 在下一帧 `OnRunning()` 里消费后更新 EntityContext。
+
+### 7.3 三层 Domain State 生命周期
+
+```
+WorldSnapshot（每帧刷新，全局只读）
+  ↑ 在 TickAll 前由 WorldSnapshotProvider 刷新
+  BT 节点只读取，不修改
+
+GroupContext（编队生命周期，中长期）
+  ↑ 同一编队内多实体共享
+  仅 BT Tick Domain 的当前帧逻辑可写入
+
+EntityContext（实体生命周期，跨帧持久）
+  ↑ 每个实体独有
+  存储：当前目标 ID、行为状态标志 (SetFlag/GetFlag)
+       整型/浮点型参数 (SetInt/SetFloat)
+       上次 tick 时间戳
+```
+
+---
+
+## 8. uvw 胶水层工作原理
+
+### 8.1 三个独立 async_handle
+
+`UvwEventLoopRuntime::Start()` 创建并启动两个 `uvw::async_handle`：
+
+```cpp
+// stop_async_：外部线程安全停止 loop
+stop_async_->on<uvw::async_event>([this](auto&, auto& handle) {
+    handle.close();
+    if (post_async_) post_async_->close();
+    loop_->stop();       // libuv loop::stop 是线程安全的
+});
+
+// post_async_：外部线程投递回调到 loop 线程
+post_async_->on<uvw::async_event>([this](auto&, auto&) {
+    DrainPostQueue();    // 在 loop 线程执行所有排队的回调
+});
+```
+
+`async_handle` 是 libuv 原语，`send()` 是**线程安全**的信号机制，任何线程都可以调用。
+
+### 8.2 PostToLoop —— 跨线程回调投递
+
+```
+任意线程调用 PostToLoop(callback):
+  ① { lock; post_queue_.push(callback); }  ← 加锁入队
+  ② post_async_->send()                    ← 发信号（线程安全）
+
+uvw loop 线程收到信号:
+  ③ async_event 触发 → DrainPostQueue()
+  ④ { lock; swap(post_queue_, local); }    ← 加锁取出，立即解锁
+  ⑤ while (!local.empty()) { cb(); }       ← 在 loop 线程执行所有 callback
+```
+
+**注意 libuv 的信号合并**：如果在 loop 线程来得及响应前，多次调用 `post_async_->send()`，libuv 可能将它们合并为**一次** async_event 回调。这是安全的，因为 `DrainPostQueue` 会一次性清空整个队列，不会遗漏 callback。
+
+### 8.3 定时器必须在 loop 线程创建和取消
+
+```
+StartOneShotTimer(delay, cb):
+  → PostToLoop([]{
+      handle = loop_->resource<uvw::timer_handle>()  ← 在 loop 线程创建
+      handle->on<uvw::timer_event>([cb]{ cb(); handle.close(); })
+      handle->start(delay, 0ms)
+  })
+
+CancelTimeout():
+  → PostToLoop([handle]{ handle->Cancel(); })        ← 在 loop 线程取消
+```
+
+所有 uvw handle 操作（create/start/stop/close）都必须在 loop 线程，这是 libuv 的硬性约束。
+
+---
+
+## 9. DefaultResultMailbox：DrainAll 详解
+
+### 9.1 两阶段队列设计
+
+```
+incoming_ (std::queue)     →  ready_ (std::unordered_map<job_id>)
+  TBB worker 写入               uvw loop 或 BT Tick Domain 读取
+  持有时间：毫秒级              持有时间：直到节点 Consume()
+  数据结构：FIFO 队列           数据结构：按 job_id 随机访问
+```
+
+**为什么分两个容器？**
+
+- `incoming_` 减少 worker 线程的锁竞争：Post() 只需短暂加锁 push 一个元素
+- `ready_` 按 job_id 索引，节点只关心自己的结果，不需要按到达顺序处理
+- `DrainAll` 用 swap 模式，加锁时间极短（只交换两个 queue 指针）
+
+### 9.2 DrainAll 执行流程
+
+```cpp
+void DrainAll(consumer) {
+    // Step 1: 原子交换，最小化锁持有时间
+    std::queue<JobResult> local;
+    { lock; std::swap(local, incoming_); }   // ← 只锁这一瞬间
+
+    // Step 2: 在锁外逐条处理
+    while (!local.empty()) {
+        JobResult r = local.front(); local.pop();
+
+        // Step 3: 存入 ready_ map，供节点按 job_id 查询
+        { lock; ready_[r.job_id] = r; }
+
+        // Step 4: 通知调用方（通常是 RequestWakeup）
+        if (consumer) consumer(r);
+    }
+}
+```
+
+### 9.3 当前实现中 DrainAll 的调用缺口
+
+`sim_host_app.cpp` 中的 wakeup callback 当前是空 lambda：
+
+```cpp
+// sim_host_app.cpp:38-43
+executor->SetWakeupCallback([event_loop_ptr = event_loop.get()]() {
+    event_loop_ptr->PostToLoop([]() {
+        // 注释：实际 drain 在下一帧 TickAll 开始时执行
+        // ← 但 TickAll 里没有 DrainAll 调用！
+    });
+});
+```
+
+**实际影响**：
+- TBB job 完成 → `mailbox.Post(result)` → 结果进入 `incoming_`
+- `notify_cb` 被触发，但只是投递了一个空操作到 uvw loop
+- `incoming_` 里的结果**永远不会被 DrainAll 移入 ready_**
+- 节点 `PeekResult()` 查询 `ready_` → 永远得到 nullopt
+- 节点永远 RUNNING，直到超时
+
+**完整的 wakeup 通知链应为**：
+
+```
+TBB Post(result)
+  → notify_cb()
+    → event_loop->PostToLoop([mailbox, bt_runtime, entity_id]{
+          mailbox->DrainAll([bt_runtime](JobResult r) {
+              bt_runtime->RequestWakeup(entity_id_from_result);
+          });
+      })
+      → uvw loop 线程执行 DrainAll，结果进入 ready_，触发 wakeup
+```
+
+这是目前需要接入的**关键缺失链路**（Phase 1 路线图的核心 TODO）。
+
+---
+
+## 10. 异步动作生命周期
 
 ```mermaid
 sequenceDiagram
@@ -184,7 +557,7 @@ sequenceDiagram
 
 ---
 
-## 6. 节点分类与实现策略
+## 11. 节点分类与实现策略
 
 | 节点类型 | 场景示例 | 实现基类 | 执行域 | 备注 |
 |----------|----------|----------|--------|------|
@@ -210,7 +583,7 @@ stateDiagram-v2
 
 ---
 
-## 7. oneTBB Arena 配置
+## 12. oneTBB Arena 配置
 
 ```mermaid
 graph LR
@@ -236,7 +609,7 @@ graph LR
 
 ---
 
-## 8. 黑板分层设计
+## 13. 黑板分层设计（BT::Blackboard 视角）
 
 ```mermaid
 graph TB
@@ -251,7 +624,7 @@ graph TB
 
 ---
 
-## 9. 标准帧数据流
+## 14. 标准帧数据流
 
 ```mermaid
 flowchart TD
@@ -280,7 +653,7 @@ flowchart TD
 
 ---
 
-## 10. 目录结构与模块职责
+## 15. 目录结构与模块职责
 
 ```
 sim-behavior/
@@ -343,7 +716,7 @@ sim-behavior/
 
 ---
 
-## 11. 依赖版本锁定
+## 16. 依赖版本锁定
 
 | 依赖 | 版本 | CMake 目标 | zip 来源 |
 |------|------|-----------|---------|
@@ -358,7 +731,7 @@ CMake 最低版本：**3.24** | C++ 标准：**C++17**
 
 ---
 
-## 12. 开发阶段路线图
+## 17. 开发阶段路线图
 
 ### Phase 1 — 最小闭环（当前）
 
@@ -387,3 +760,120 @@ CMake 最低版本：**3.24** | C++ 标准：**C++17**
 - [ ] 实体分组批量 tick
 - [ ] 每帧 tick 耗时采样
 - [ ] `TraceLogger`（节点状态迁移日志）
+
+---
+
+## 18. 常见误区与陷阱
+
+初次接触本项目的开发者容易在以下地方产生误解，逐条说明正确理解：
+
+---
+
+### ❌ 误区 1：所有节点都是异步的
+
+**错误理解**：项目里只有 `AsyncActionBase`，所以所有节点都走 TBB + uvw。
+
+**正确理解**：
+- BehaviorTree.CPP 的控制流节点（`Sequence`、`Fallback`、`Parallel`）是同步执行的
+- 条件节点（继承 `BT::ConditionNode`）每帧同步返回 SUCCESS/FAILURE，不进 TBB
+- `AsyncActionBase` 只是**动作节点**的异步封装，且是可选的
+- 同步动作（继承 `BT::SyncActionNode`）在 BT Tick Domain 内执行，不经过 TBB/uvw
+
+---
+
+### ❌ 误区 2：第二次 tick 到 RUNNING 节点会再投一个 TBB job
+
+**错误理解**：节点每帧被 tick，RUNNING 状态下每帧都调用 `onStart()` 提交新 job，导致 job 堆积。
+
+**正确理解**：
+- `BT::StatefulActionNode` 内部维护节点 `status_`
+- 节点首次 tick 调用 `onStart()`，此后只要返回 RUNNING，后续 tick 只调用 `onRunning()`
+- `SubmitCpuJob()` 只在 `onStart()` 里调用，整个异步生命周期只投一次 job
+
+---
+
+### ❌ 误区 3：TBB worker 可以直接修改实体状态
+
+**错误理解**：任务 lambda 里可以写 `entity_ctx->SetFlag("found_target", true)`。
+
+**正确理解**：
+- `EntityContext` / `GroupContext` / `BT::Blackboard` 不是线程安全的
+- TBB worker 唯一的输出通道是 `result_out`（`JobResult&` 参数）
+- 结果通过 `mailbox.Post()` 写入，由 BT Tick Domain 在下一帧 `OnRunning()` 里消费
+
+```cpp
+// 正确的 TBB 任务写法
+ctx->SubmitCpuJob(kNormal, [](CancellationTokenPtr token, JobResult& out) {
+    // ✅ 只操作本地变量
+    float path_length = compute_path_length(...);
+    if (token->IsCancelled()) { out.succeeded = false; return; }
+    // ✅ 结果写入 out，不碰任何共享状态
+    out.succeeded = true;
+    out.payload = path_length;   // std::any 携带自定义类型
+});
+
+// 在 OnRunning() 里消费（BT Tick Domain）
+auto result = ctx_->PeekResult(job_id_);
+if (result) {
+    float path = std::any_cast<float>(result->payload);
+    entity_ctx->SetFloat("path_length", path);   // ✅ 在正确的域写 EntityContext
+}
+```
+
+---
+
+### ❌ 误区 4：uvw 是用来做网络 I/O 的
+
+**错误理解**：uvw/libuv 是 node.js 同款事件循环，项目用它做 TCP/UDP 通信。
+
+**正确理解**：
+- 当前项目用 uvw **只做两件事**：
+  1. 定时器（`StartOneShotTimer` → 超时机制）
+  2. 跨线程信号（`async_handle.send()` → TBB 完成后唤醒 BT）
+- 网络 I/O（`BusAdapter`）是 Phase 3 路线图的内容，当前未实现
+- `PostToLoop` 是跨线程安全投递 callback 的通用机制，是 uvw 在项目里最核心的使用方式
+
+---
+
+### ❌ 误区 5：wakeup_queue_ 里的实体每帧只被 tick 一次
+
+**错误理解**：Phase 1 处理完 wakeup_queue_，Phase 2 就不会再 tick 它了。
+
+**正确理解**：
+- Phase 1 tick 完 wakeup 实体后，Phase 2 仍会在 `for (auto& kv : trees_)` 里再次 tick 同一实体
+- 同一帧内该实体被 tick **两次**
+- 第二次 tick 是安全的（`onRunning()` 的 `PeekResult` 是幂等的），但会多消耗一次 BT 执行时间
+- 如果 Phase 1 已经让节点成功消费结果并返回 SUCCESS，树状态在 Phase 2 会继续推进到下一个节点
+
+---
+
+### ❌ 误区 6：`Discard()` 能彻底取消一个 job 的结果
+
+**错误理解**：`mailbox->Discard(job_id)` 后，该 job 的结果会被完全清除。
+
+**正确理解**：
+```cpp
+// default_result_mailbox.cpp
+void DefaultResultMailbox::Discard(uint64_t job_id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    ready_.erase(job_id);   // ← 只清除 ready_ 里的
+    // incoming_ 里可能还有此 job 的结果！
+}
+```
+- `Discard` 只清除 `ready_` map，不处理 `incoming_` 队列
+- 若 TBB job 已经完成但 `DrainAll` 尚未执行，结果仍在 `incoming_` 里
+- 下次 `DrainAll` 时会把这个"已丢弃"的 job 结果移入 `ready_`
+- 节点下帧如果恰好 `PeekResult()` 同一 job_id，会读到本该丢弃的结果
+- 高频取消场景下应改用 `deque + discard_set` 方案
+
+---
+
+### ❌ 误区 7：`notify_cb` 触发后 BT 节点立即被重新 tick
+
+**错误理解**：TBB job 完成 → `notify_cb` → BT 节点立刻在 uvw 线程里被再次执行。
+
+**正确理解**：
+- `notify_cb` → `PostToLoop` → uvw loop 线程 → `RequestWakeup(entity_id)` → **加入 wakeup_queue_**
+- 实体的下次 tick 要等到**下一帧 `TickAll` 的 Phase 1**
+- 最坏情况：TBB job 完成时主线程刚刚结束 Phase 1，那么要等整整一帧（50ms）才能处理结果
+- 这是设计上的权衡：保证 BT 执行在单线程，代价是最多一帧的额外延迟
