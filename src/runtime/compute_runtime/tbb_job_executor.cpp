@@ -3,20 +3,18 @@
 #include <tbb/task_arena.h>
 
 #include "tbb_job_handle.hpp"
+#include "sim_bt/common/sim_bt_log.hpp"
 
 namespace sim_bt {
 
 TbbJobExecutor::TbbJobExecutor(ArenaConfig config)
     : config_(config),
-      arena_high_(tbb::task_arena::attach{}),
-      arena_normal_(tbb::task_arena::attach{}),
-      arena_low_(tbb::task_arena::attach{}),
-      mailbox_(std::make_shared<DefaultResultMailbox>()) {
-  // 用指定并发数重新初始化各 arena
-  arena_high_.initialize(config.high_concurrency);
-  arena_normal_.initialize(config.normal_concurrency);
-  arena_low_.initialize(config.low_concurrency);
-}
+      // 直接以并发数构造；避免 attach{} + initialize() 在已有 TBB arena 时
+      // 触发 "Impossible to modify settings of an already initialized task_arena"
+      arena_high_(config.high_concurrency),
+      arena_normal_(config.normal_concurrency),
+      arena_low_(config.low_concurrency),
+      mailbox_(std::make_shared<DefaultResultMailbox>()) {}
 
 TbbJobExecutor::~TbbJobExecutor() noexcept {
   Shutdown();
@@ -37,6 +35,7 @@ tbb::task_arena& TbbJobExecutor::ArenaFor(JobPriority priority) {
 
 JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
   if (shutdown_.load(std::memory_order_acquire)) {
+    SIMBT_LOG_WARN("TbbJobExecutor::Submit rejected: executor already shut down");
     return nullptr;
   }
 
@@ -45,6 +44,11 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
   auto handle = std::make_shared<TbbJobHandle>(job_id, token);
 
   pending_count_.fetch_add(1, std::memory_order_relaxed);
+
+  SIMBT_LOG_INFO_S("TbbJobExecutor: submit job_id=" << job_id
+      << " priority=" << static_cast<int>(descriptor.priority)
+      << " owner=" << descriptor.owner_entity
+      << " pending=" << pending_count_.load(std::memory_order_relaxed));
 
   tbb::task_arena& arena = ArenaFor(descriptor.priority);
   tbb::task_group& tg    = (descriptor.priority == JobPriority::kHigh   ? tg_high_
@@ -65,11 +69,15 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
       auto h = weak_handle.lock();
 
       if (token->IsCancelled()) {
+        SIMBT_LOG_INFO_S("TbbJobExecutor: job_id=" << job_id
+            << " owner=" << owner_entity << " cancelled before start");
         if (h) h->SetState(JobState::kCancelled);
         pending->fetch_sub(1, std::memory_order_relaxed);
         return;
       }
 
+      SIMBT_LOG_INFO_S("TbbJobExecutor: job_id=" << job_id
+          << " owner=" << owner_entity << " starting");
       if (h) h->SetState(JobState::kRunning);
 
       JobResult result;
@@ -78,17 +86,25 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
       try {
         task_func(token, result);
         if (!token->IsCancelled()) {
+          SIMBT_LOG_INFO_S("TbbJobExecutor: job_id=" << job_id
+              << " owner=" << owner_entity << " completed succeeded=" << result.succeeded);
           if (h) h->SetState(JobState::kCompleted);
         } else {
+          SIMBT_LOG_INFO_S("TbbJobExecutor: job_id=" << job_id
+              << " owner=" << owner_entity << " cancelled mid-task");
           if (h) h->SetState(JobState::kCancelled);
           result.succeeded = false;
           result.error_message = "cancelled";
         }
       } catch (const std::exception& ex) {
+        SIMBT_LOG_ERROR_S("TbbJobExecutor: job_id=" << job_id
+            << " owner=" << owner_entity << " exception: " << ex.what());
         if (h) h->SetState(JobState::kFailed);
         result.succeeded = false;
         result.error_message = ex.what();
       } catch (...) {
+        SIMBT_LOG_ERROR_S("TbbJobExecutor: job_id=" << job_id
+            << " owner=" << owner_entity << " unknown exception");
         if (h) h->SetState(JobState::kFailed);
         result.succeeded = false;
         result.error_message = "unknown exception in TBB task";
@@ -107,11 +123,13 @@ IResultMailbox& TbbJobExecutor::Mailbox() {
 }
 
 void TbbJobExecutor::Shutdown() {
+  SIMBT_LOG_INFO_S("TbbJobExecutor: shutdown pending=" << pending_count_.load());
   shutdown_.store(true, std::memory_order_release);
   // 等待所有 in-flight 任务完成
   tg_high_.wait();
   tg_normal_.wait();
   tg_low_.wait();
+  SIMBT_LOG_INFO("TbbJobExecutor: shutdown complete");
 }
 
 size_t TbbJobExecutor::PendingJobCount() const {

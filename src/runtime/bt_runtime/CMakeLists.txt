@@ -19,6 +19,7 @@ target_link_libraries(simbehavior_bt_runtime
     simbehavior_adapters  # SyncNodeContextImpl 需要 ICommandBus
   PRIVATE
     corekit
+    simbehavior_log  # 进程级日志（SIMBT_LOG_* 宏）
 )
 
 target_compile_features(simbehavior_bt_runtime PUBLIC cxx_std_17)

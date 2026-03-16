@@ -6,6 +6,7 @@
 // 具体实现引用（内部 include，不暴露到 public interface）
 #include "../runtime/compute_runtime/tbb_job_executor.hpp"
 #include "../runtime/async_runtime/uvw_event_loop_runtime.hpp"
+#include "sim_bt/common/sim_bt_log.hpp"
 
 namespace sim_bt {
 
@@ -13,13 +14,18 @@ namespace sim_bt {
 std::shared_ptr<IBtRuntime>  CreateBtRuntime();
 std::shared_ptr<ICommandBus> CreateInProcessCommandBus();
 
-SimHostApp::SimHostApp() {}
+SimHostApp::SimHostApp() {
+  // 尽早初始化进程级 logger，使后续所有 SIMBT_LOG_* 调用立即生效
+  InitSimBtLog("sim_host");
+}
 
 SimHostApp::~SimHostApp() {
   RequestStop();
+  ShutdownSimBtLog();
 }
 
 SimStatus SimHostApp::Initialize() {
+  SIMBT_LOG_INFO("SimHostApp: initializing");
   // ── 创建各运行时 ──────────────────────────────────────────────────────────
 
   // Compute Runtime
@@ -74,6 +80,7 @@ SimStatus SimHostApp::Initialize() {
   status = event_loop_->Start();
   if (!status) return status;
 
+  SIMBT_LOG_INFO("SimHostApp: initialization complete");
   return SimStatus::Ok();
 }
 
@@ -82,6 +89,7 @@ void SimHostApp::Run() {
 }
 
 void SimHostApp::RequestStop() {
+  SIMBT_LOG_INFO_S("SimHostApp: stop requested at sim_time=" << current_sim_time_ << "ms");
   stop_requested_ = true;
   if (event_loop_) event_loop_->Stop();
   if (job_executor_) job_executor_->Shutdown();

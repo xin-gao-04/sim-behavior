@@ -2,9 +2,14 @@
 
 #include <functional>
 
+#include "sim_bt/common/sim_bt_log.hpp"
+
 namespace sim_bt {
 
 void DefaultResultMailbox::Post(JobResult result) {
+  SIMBT_LOG_INFO_S("ResultMailbox: post job_id=" << result.job_id
+      << " owner=" << result.owner_entity
+      << " succeeded=" << result.succeeded);
   VoidCallback cb;
   {
     std::lock_guard<std::mutex> lock(mu_);
@@ -23,6 +28,9 @@ void DefaultResultMailbox::DrainAll(
   {
     std::lock_guard<std::mutex> lock(mu_);
     std::swap(local, incoming_);
+  }
+  if (!local.empty()) {
+    SIMBT_LOG_INFO_S("ResultMailbox: drain " << local.size() << " result(s)");
   }
   while (!local.empty()) {
     JobResult r = std::move(local.front());

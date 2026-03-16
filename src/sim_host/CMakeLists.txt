@@ -17,6 +17,7 @@ target_link_libraries(sim_host
     simbehavior_domain
     simbehavior_adapters
     corekit
+    simbehavior_log  # InitSimBtLog / ShutdownSimBtLog
 )
 
 target_compile_features(sim_host PRIVATE cxx_std_17)

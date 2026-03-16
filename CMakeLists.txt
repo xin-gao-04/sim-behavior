@@ -21,6 +21,9 @@ set(SIMBEHAVIOR_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ── 子模块 ───────────────────────────────────────────────────────────────────
 
+# 公共日志模块（其他所有子模块均可 PRIVATE 依赖，无需显式传 logger 指针）
+add_subdirectory(src/common)
+
 # 运行时层
 add_subdirectory(src/runtime/compute_runtime)
 add_subdirectory(src/runtime/async_runtime)

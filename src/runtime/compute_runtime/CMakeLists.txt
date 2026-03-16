@@ -12,7 +12,8 @@ target_link_libraries(simbehavior_compute_runtime
   PUBLIC
     TBB::tbb
   PRIVATE
-    corekit  # 使用 corekit 内存分配器（可选）
+    corekit          # 使用 corekit 内存分配器（可选）
+    simbehavior_log  # 进程级日志（SIMBT_LOG_* 宏）
 )
 
 target_compile_features(simbehavior_compute_runtime PUBLIC cxx_std_17)

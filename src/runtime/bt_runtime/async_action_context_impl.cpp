@@ -1,5 +1,7 @@
 #include "async_action_context_impl.hpp"
 
+#include "sim_bt/common/sim_bt_log.hpp"
+
 namespace sim_bt {
 
 AsyncActionContextImpl::AsyncActionContextImpl(
@@ -24,6 +26,9 @@ JobHandlePtr AsyncActionContextImpl::SubmitCpuJob(
   desc.owner_entity = owner_;  // 框架自动携带，DrainAll 后可直接 RequestWakeup
   desc.task         = std::move(task);
 
+  SIMBT_LOG_INFO_S("AsyncActionCtx: entity=" << owner_
+      << " submitting cpu job priority=" << static_cast<int>(priority));
+
   active_handle_ = executor_->Submit(std::move(desc));
 
   // 任务完成后，ResultMailbox 的 notify_cb 会触发 uvw wakeup，
@@ -46,11 +51,14 @@ void AsyncActionContextImpl::ConsumeResult(uint64_t job_id) {
 }
 
 void AsyncActionContextImpl::StartTimeout(std::chrono::milliseconds timeout) {
+  SIMBT_LOG_INFO_S("AsyncActionCtx: entity=" << owner_
+      << " timeout started " << timeout.count() << "ms");
   timed_out_.store(false, std::memory_order_relaxed);
   EntityId owner = owner_;
   auto bt = bt_runtime_;
   auto& timed_out_ref = timed_out_;
   timeout_handle_ = event_loop_->StartOneShotTimer(timeout, [owner, bt, &timed_out_ref]() {
+    SIMBT_LOG_WARN_S("AsyncActionCtx: entity=" << owner << " timeout fired");
     timed_out_ref.store(true, std::memory_order_release);
     if (bt) bt->RequestWakeup(owner);
   });

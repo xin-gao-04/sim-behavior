@@ -10,6 +10,8 @@
 #include <queue>
 #include <unordered_map>
 
+#include "sim_bt/common/sim_bt_log.hpp"
+
 namespace sim_bt {
 
 // ── 内部 TreeInstance ─────────────────────────────────────────────────────────
@@ -54,10 +56,12 @@ class BtRuntimeImpl : public IBtRuntime {
 
   SimStatus Initialize() override {
     initialized_ = true;
+    SIMBT_LOG_INFO("BtRuntime: initialized");
     return SimStatus::Ok();
   }
 
   void Shutdown() override {
+    SIMBT_LOG_INFO("BtRuntime: shutdown");
     std::lock_guard<std::mutex> lock(mu_);
     for (auto& kv : trees_) {
       if (kv.second) kv.second->Halt();
@@ -94,6 +98,8 @@ class BtRuntimeImpl : public IBtRuntime {
         std::lock_guard<std::mutex> lock(mu_);
         trees_[entity_id] = inst;
       }
+      SIMBT_LOG_INFO_S("BtRuntime: created tree \"" << tree_name
+          << "\" for entity=" << entity_id);
       return SimResult<TreeInstancePtr>(std::static_pointer_cast<ITreeInstance>(inst));
     } catch (const std::exception& ex) {
       return SimResult<TreeInstancePtr>(
@@ -116,12 +122,18 @@ class BtRuntimeImpl : public IBtRuntime {
     return (it != trees_.end()) ? it->second : nullptr;
   }
 
-  void TickAll(SimTimeMs /*sim_time_ms*/) override {
+  void TickAll(SimTimeMs sim_time_ms) override {
     // 先处理 wakeup 队列，确保外部请求在本帧生效
     std::queue<EntityId> wakeups;
     {
       std::lock_guard<std::mutex> lock(mu_);
       std::swap(wakeups, wakeup_queue_);
+    }
+    const size_t wakeup_count = wakeups.size();
+    if (wakeup_count > 0) {
+      SIMBT_LOG_INFO_S("BtRuntime: tick_all sim_time=" << sim_time_ms
+          << "ms trees=" << trees_.size()
+          << " wakeups=" << wakeup_count);
     }
     while (!wakeups.empty()) {
       EntityId id = wakeups.front();
@@ -141,6 +153,7 @@ class BtRuntimeImpl : public IBtRuntime {
   }
 
   void RequestWakeup(EntityId entity_id) override {
+    SIMBT_LOG_INFO_S("BtRuntime: wakeup requested entity=" << entity_id);
     std::lock_guard<std::mutex> lock(mu_);
     wakeup_queue_.push(entity_id);
   }
