@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(sim_behavior VERSION 0.1.0 LANGUAGES CXX)
 
 # ── 选项 ──────────────────────────────────────────────────────────────────────

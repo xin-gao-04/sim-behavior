@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 
 namespace sim_bt {
 

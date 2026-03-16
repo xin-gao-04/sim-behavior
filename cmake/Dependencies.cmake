@@ -18,7 +18,7 @@
 #   3. 内网机器直接 cmake -B build，自动解压并编译
 # ─────────────────────────────────────────────────────────────────────────────
 
-cmake_minimum_required(VERSION 3.24)  # file(ARCHIVE_EXTRACT) 需要 3.18+
+cmake_minimum_required(VERSION 3.18)  # file(ARCHIVE_EXTRACT) 需要 3.18+
 include(FetchContent)
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -79,7 +79,7 @@ endfunction()
 # ╚══════════════════════════════════════════════════════════════════════════╝
 macro(_dep_add _name _vendor_dir _git_repo _git_tag)
   # 先处理附加的 CMake 选项（设置 CACHE 变量影响子项目）
-  foreach(_o IN LISTS ARGN)
+  foreach(_o ${ARGN})
     string(REPLACE "=" ";" _kv "${_o}")
     list(GET _kv 0 _k)
     list(GET _kv 1 _v)
@@ -250,6 +250,7 @@ message(STATUS "[sim-behavior] uvw::uvw ready")
 if(NOT TARGET behaviortree_cpp AND NOT TARGET BT::behaviortree_cpp)
   _dep_add(behaviortree_cpp BehaviorTree.CPP
     https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.9.0
+    "BTCPP_GROOT_INTERFACE=OFF" "BTCPP_SQLITE_LOGGING=OFF"
     "BTCPP_UNIT_TESTS=OFF" "BTCPP_BUILD_TOOLS=OFF"
     "BTCPP_EXAMPLES=OFF"   "BUILD_TESTING=OFF"
   )
