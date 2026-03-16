@@ -207,8 +207,8 @@ class ComputeAction : public sim_bt::AsyncActionBase {
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| Phase 1 | 最小闭环：单实体、TBB 任务 → uvw wakeup → re-tick | 🏗 进行中 |
-| Phase 2 | 多实体、WorldSnapshot 完整集成、端到端结果消费 | ⏳ |
+| Phase 1 | 最小闭环：单实体、TBB 任务 → uvw wakeup → re-tick | ✅ 完成（29/29 tests pass） |
+| Phase 2 | 多实体、WorldSnapshot 完整集成、端到端结果消费 | 🏗 进行中 |
 | Phase 3 | uvw TCP/UDP BusAdapter、仿真宿主总线接入 | ⏳ |
 | Phase 4 | 性能治理：多 arena 优先级验证、批量 tick、TraceLogger | ⏳ |
 
@@ -218,6 +218,6 @@ class ComputeAction : public sim_bt::AsyncActionBase {
 
 | 平台 | 编译器 | 状态 |
 |------|--------|------|
-| macOS 14 (ARM64) | AppleClang 17 | ✅ 21/21 tests pass |
+| macOS 14 (ARM64) | AppleClang 17 | ✅ 29/29 tests pass |
 | Ubuntu 22.04 | GCC 13 | 🏗 待验证 |
 | Windows Server 2022 | MSVC 2022 | 🏗 待验证 |
