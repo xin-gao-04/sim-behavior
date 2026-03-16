@@ -877,3 +877,196 @@ void DefaultResultMailbox::Discard(uint64_t job_id) {
 - 实体的下次 tick 要等到**下一帧 `TickAll` 的 Phase 1**
 - 最坏情况：TBB job 完成时主线程刚刚结束 Phase 1，那么要等整整一帧（50ms）才能处理结果
 - 这是设计上的权衡：保证 BT 执行在单线程，代价是最多一帧的额外延迟
+
+---
+
+## 19. 进程级日志模块（simbehavior_log）
+
+### 19.1 设计动机
+
+corekit 的日志系统采用依赖注入（`COREKIT_LOG_*(logger, ...)` 宏显式传 `ILogManager*`），这对框架层来说过于繁琐——每个构造函数都要透传 logger 指针。`simbehavior_log` 在 corekit 之上加了一层薄封装，提供**进程级 logger 单例**，并定义便捷宏，使调用处完全无感知 logger 来源。
+
+### 19.2 模块结构
+
+```
+include/sim_bt/common/sim_bt_log.hpp   ← 公共头：SimBtLog() + SIMBT_LOG_* 宏
+src/common/sim_bt_log.cpp              ← 全局 ILogManager* 单例实现
+src/common/CMakeLists.txt              ← simbehavior_log 库（PUBLIC dep: corekit）
+```
+
+### 19.3 API 设计
+
+```cpp
+// 进程级 logger 访问器（未初始化时返回 nullptr，宏对 nullptr 安全 no-op）
+corekit::log::ILogManager* SimBtLog();
+
+// 生命周期管理（在 SimHostApp 构造/析构中调用）
+void InitSimBtLog(const std::string& app_name = "sim_bt");
+void ShutdownSimBtLog();
+
+// 便捷宏（隐含 SimBtLog() 为第一参数）
+SIMBT_LOG_INFO("literal message")
+SIMBT_LOG_INFO_S("x=" << x << " y=" << y)   // _S 版：参数是流表达式
+SIMBT_LOG_WARN_S(...)
+SIMBT_LOG_ERROR_S(...)
+```
+
+`_S` 后缀版本接受 `<<` 流表达式，内部用 `std::ostringstream` 拼接后再转 string；无 `_S` 版本接受已经是 `std::string` 的字面量。
+
+### 19.4 初始化时序
+
+```
+SimHostApp::SimHostApp()
+    └─ InitSimBtLog("sim_host")        ← 构造时立即初始化，最早点
+        └─ corekit_create_log_manager()
+        └─ ILogManager::Init("sim_host", "")
+
+SimHostApp::~SimHostApp()
+    └─ RequestStop()
+    └─ ShutdownSimBtLog()              ← 析构时最后清理
+        └─ ILogManager::Shutdown()
+        └─ corekit_destroy_log_manager()
+```
+
+日志在运行时层（TbbJobExecutor、DefaultResultMailbox 等）使用时，`SimBtLog()` 可能返回 nullptr（例如在单元测试中未调用 `InitSimBtLog`），宏内部的 `CorekitLogWrite` 会安全地提前返回，**不产生任何副作用**。
+
+### 19.5 已埋点的关键路径
+
+| 模块 | 埋点事件 | 级别 |
+|------|----------|------|
+| TbbJobExecutor | 任务提交（id/priority/owner/pending 数） | INFO |
+| TbbJobExecutor | 任务开始 / 完成 / 取消 / 未捕获异常 | INFO / ERROR |
+| TbbJobExecutor | shutdown 开始 / 完成 | INFO |
+| DefaultResultMailbox | 结果入队（job_id/owner/succeeded） | INFO |
+| DefaultResultMailbox | DrainAll 批量消费（条数） | INFO |
+| BtRuntimeImpl | 初始化 / 关闭 | INFO |
+| BtRuntimeImpl | CreateTree（entity/tree_name） | INFO |
+| BtRuntimeImpl | TickAll（有 wakeup 时才打印） | INFO |
+| BtRuntimeImpl | RequestWakeup（entity_id） | INFO |
+| AsyncActionContextImpl | SubmitCpuJob（entity/priority） | INFO |
+| AsyncActionContextImpl | StartTimeout（entity/毫秒） | INFO |
+| AsyncActionContextImpl | 超时触发 | WARN |
+| SimHostApp | 初始化开始 / 完成 | INFO |
+| SimHostApp | RequestStop（附 sim_time） | INFO |
+
+TickAll 的日志仅在 `wakeup_count > 0` 时输出，避免 20Hz 固定帧率下产生的日志洪流（否则每分钟 1200 条 INFO）。
+
+### 19.6 CMake 依赖关系
+
+```
+simbehavior_log  (PUBLIC: corekit)
+    ↑ PRIVATE dep
+simbehavior_compute_runtime
+simbehavior_bt_runtime
+sim_host
+```
+
+`simbehavior_log` 将 `corekit` 作为 PUBLIC 依赖暴露，消费方无需再单独 link corekit 即可使用 `ILogManager*` 类型及其宏。
+
+---
+
+## 20. 第三方库功能重叠处理原则
+
+### 20.1 已知重叠：nlohmann/json
+
+项目中两个依赖均自带 nlohmann/json 单头文件：
+
+| 依赖 | 路径 | 版本 |
+|------|------|------|
+| BehaviorTree.CPP | `contrib/json.hpp` | 3.11.3 |
+| corekit | `3party/json.hpp` | 3.12.0 |
+
+**行业标准处理原则**：
+
+1. **用途分层，而非来源统一**。两者的 JSON 用途完全正交，不存在真正重叠：
+   - `BT::JsonExporter`：专属 BT 层，用于 blackboard 自定义类型的 `to_json/from_json` 注册，以及树结构序列化。其 API 是 BT 框架的一部分，不应绕过它直接操作 nlohmann/json。
+   - `corekit::json::JsonCodec`：属于基础设施层，用于读取外部配置文件、IPC 载荷序列化。封装了 `Result<>` 错误处理。
+
+2. **禁止在 src/common 中直接 include BT.CPP 的 `contrib/json.hpp`**。这会把 BT 内部依赖泄漏到基础设施层，违反分层原则。
+
+3. **若将来 `src/common` 需要 JSON 能力**（如读取仿真配置），使用 `corekit::json::JsonCodec`，而不是引入第三条 JSON 路径。
+
+4. **版本差异（3.11.3 vs 3.12.0）在同一进程内共存是安全的**，因为两者均使用独立命名空间且在各自编译单元内静态展开，不产生 ODR 冲突。
+
+### 20.2 通用决策框架
+
+当发现两个依赖提供类似功能时，按以下顺序决策：
+
+```
+1. 用途相同（完全可替代）？
+   → 选择"层所有权"更明确的那个，移除另一个
+   
+2. 用途不同（各自服务不同层/关注点）？
+   → 保留两者，在各自归属的层内使用，禁止跨层引用对方的依赖
+   
+3. 无法确定？
+   → 优先选择更靠近抽象层底部的那个（较少业务耦合）
+```
+
+---
+
+## 21. BehaviorTree.CPP SQLite 节点日志（开发工具层）
+
+### 21.1 SqliteLogger 是什么
+
+BT.CPP 内置 `BT::SqliteLogger`（`loggers/bt_sqlite_logger.h`），是一个 `StatusChangeLogger`，以**非侵入式观察者模式**挂载到树上，自动记录所有节点的状态转换：
+
+```
+BT Node 状态转换
+    ↓ (IDLE→RUNNING / RUNNING→SUCCESS / RUNNING→FAILURE)
+SqliteLogger::callback()
+    ↓
+SQLite3 数据库（.btdb 文件）
+    ↓
+Groot2 可视化调试器 / 离线分析
+```
+
+数据库 schema 包含三张表：
+- `Definitions`：树的 XML 结构快照 + 会话元数据
+- `Nodes`：节点 uid → 路径映射
+- `Transitions`：时间戳、节点 uid、状态变化、可选额外数据
+
+### 21.2 与 SIMBT_LOG_* 的定位区别
+
+| 维度 | SIMBT_LOG_* （simbehavior_log） | SqliteLogger |
+|------|--------------------------------|--------------|
+| 目标受众 | 运维人员、系统集成 | BT 开发者、行为调试 |
+| 记录内容 | 系统事件（job提交、wakeup、超时） | BT 节点状态转换序列 |
+| 格式 | 文本日志 | SQLite 结构化数据库 |
+| 典型使用 | 生产监控、故障排查 | 行为逻辑开发、Groot2 可视化 |
+| 推荐开关 | 生产环境默认 INFO 级别 | 生产关闭，开发/调试按需开启 |
+
+两者**完全正交**，可以同时运行，不互相干扰。
+
+### 21.3 本项目集成建议
+
+**推荐做法**：在 `SimHostApp` 上增加一个可选的调试日志激活接口，编译期和运行期双重开关。
+
+```cpp
+// sim_host_app.hpp（示意）
+class SimHostApp {
+ public:
+  // 在 Initialize() 之后、Run() 之前调用
+  // 仅在 DEBUG 构建或显式启用时有效
+  void EnableTreeDebugLogger(const std::string& db_path);
+  
+ private:
+  std::unique_ptr<BT::SqliteLogger> debug_logger_;  // nullptr = disabled
+};
+```
+
+```cpp
+// 典型开发流程
+SimHostApp app;
+app.Initialize();
+#ifndef NDEBUG
+app.EnableTreeDebugLogger("debug_session.btdb");  // 生成 Groot2 可加载的文件
+#endif
+app.Run();
+```
+
+**注意事项**：
+- `SqliteLogger` 构造时需要已创建好的 `BT::Tree` 对象，因此必须在 `CreateTree()` 之后调用
+- 每次 `EnableTreeDebugLogger` 应在所有树创建完成后统一挂载
+- `.btdb` 文件在进程正常退出时由析构函数 `flush()` 写盘；异常崩溃可能丢失最后一批数据
+- 大规模实体（数百棵树、20Hz 帧率）下 SQLite 写入会成为性能瓶颈，测试环境单实体调试时再开启
