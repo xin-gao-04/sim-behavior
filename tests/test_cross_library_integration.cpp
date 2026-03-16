@@ -60,16 +60,19 @@ class CrossLibIntegrationTest : public ::testing::Test {
 
   // 将 executor 的 wakeup 回调绑定到 event_loop 的 PostToLoop，
   // 并在 loop 线程执行 DrainAll，将每条结果传递给 on_result。
-  void WireWakeup(std::function<void(const JobResult&)> on_result) {
-    auto& mailbox   = executor_->Mailbox();
-    auto  loop_weak = std::weak_ptr<UvwEventLoopRuntime>(event_loop_);
+  //
+  // 注意：mailbox 和 on_result 均通过值捕获（shared_ptr / std::function），
+  // 避免 WireWakeup 返回后出现悬空引用。
+  void WireWakeup(std::function<void(JobResult)> on_result) {
+    auto mailbox_shared = executor_->Mailbox_shared();  // shared_ptr，值捕获安全
+    auto loop_weak      = std::weak_ptr<UvwEventLoopRuntime>(event_loop_);
 
-    executor_->SetWakeupCallback([loop_weak, &mailbox, on_result]() {
+    executor_->SetWakeupCallback([loop_weak, mailbox_shared, on_result]() {
       auto loop = loop_weak.lock();
       if (!loop) return;
-      loop->PostToLoop([&mailbox, on_result]() {
-        mailbox.DrainAll([&on_result](const JobResult& r) {
-          on_result(r);
+      loop->PostToLoop([mailbox_shared, on_result]() {
+        mailbox_shared->DrainAll([on_result](JobResult r) {
+          on_result(std::move(r));
         });
       });
     });
@@ -87,7 +90,7 @@ TEST_F(CrossLibIntegrationTest, SuccessfulJobResultDelivered) {
   std::atomic<bool> result_succeeded{false};
   std::atomic<uint64_t> received_job_id{0};
 
-  WireWakeup([&](const JobResult& r) {
+  WireWakeup([&](JobResult r) {
     received_job_id.store(r.job_id, std::memory_order_release);
     result_succeeded.store(r.succeeded, std::memory_order_release);
     result_received.store(true, std::memory_order_release);
@@ -116,7 +119,7 @@ TEST_F(CrossLibIntegrationTest, FailedJobResultDelivered) {
   std::atomic<bool> result_succeeded{true};  // 故意初始化为 true，验证被覆盖
   std::string received_error;
 
-  WireWakeup([&](const JobResult& r) {
+  WireWakeup([&](JobResult r) {
     result_succeeded.store(r.succeeded, std::memory_order_release);
     received_error = r.error_message;
     result_received.store(true, std::memory_order_release);
@@ -144,7 +147,7 @@ TEST_F(CrossLibIntegrationTest, MultipleJobsAllDelivered) {
   std::mutex mu;
   std::vector<uint64_t> received_ids;
 
-  WireWakeup([&](const JobResult& r) {
+  WireWakeup([&](JobResult r) {
     std::lock_guard<std::mutex> lk(mu);
     received_ids.push_back(r.job_id);
   });

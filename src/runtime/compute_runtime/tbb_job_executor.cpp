@@ -52,41 +52,44 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
                                                                           : tg_low_);
 
   // 捕获 shared_ptr 以延长生命周期；task 不持有 this 以防悬垂
-  auto mailbox   = mailbox_;
-  auto task_func = std::move(descriptor.task);
-  auto weak_handle = std::weak_ptr<TbbJobHandle>(handle);
+  auto mailbox      = mailbox_;
+  auto task_func    = std::move(descriptor.task);
+  auto weak_handle  = std::weak_ptr<TbbJobHandle>(handle);
+  EntityId owner_entity = descriptor.owner_entity;
 
-  arena.execute([&tg, job_id, token, mailbox, task_func,
+  arena.execute([&tg, job_id, owner_entity, token, mailbox, task_func,
                  weak_handle, pending = &pending_count_]() mutable {
-    tg.run([job_id, token, mailbox, task_func, weak_handle, pending]() {
+    tg.run([job_id, owner_entity, token, mailbox, task_func, weak_handle, pending]() {
+      // handle 可能已被调用方丢弃（fire-and-forget 场景），但结果仍须无条件投递。
+      // 状态更新是可选的：只在 handle 仍存活时更新。
       auto h = weak_handle.lock();
-      if (!h) return;
 
       if (token->IsCancelled()) {
-        h->SetState(JobState::kCancelled);
+        if (h) h->SetState(JobState::kCancelled);
         pending->fetch_sub(1, std::memory_order_relaxed);
         return;
       }
 
-      h->SetState(JobState::kRunning);
+      if (h) h->SetState(JobState::kRunning);
 
       JobResult result;
-      result.job_id = job_id;
+      result.job_id       = job_id;
+      result.owner_entity = owner_entity;  // 框架填充，worker 无需关心
       try {
         task_func(token, result);
         if (!token->IsCancelled()) {
-          h->SetState(JobState::kCompleted);
+          if (h) h->SetState(JobState::kCompleted);
         } else {
-          h->SetState(JobState::kCancelled);
+          if (h) h->SetState(JobState::kCancelled);
           result.succeeded = false;
           result.error_message = "cancelled";
         }
       } catch (const std::exception& ex) {
-        h->SetState(JobState::kFailed);
+        if (h) h->SetState(JobState::kFailed);
         result.succeeded = false;
         result.error_message = ex.what();
       } catch (...) {
-        h->SetState(JobState::kFailed);
+        if (h) h->SetState(JobState::kFailed);
         result.succeeded = false;
         result.error_message = "unknown exception in TBB task";
       }

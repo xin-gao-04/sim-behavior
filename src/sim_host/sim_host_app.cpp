@@ -34,18 +34,35 @@ SimStatus SimHostApp::Initialize() {
   auto event_loop = std::make_shared<UvwEventLoopRuntime>();
   event_loop_ = event_loop;
 
-  // 将 TBB 结果写入 mailbox 后触发 uvw wakeup
-  executor->SetWakeupCallback([event_loop_ptr = event_loop.get()]() {
-    event_loop_ptr->PostToLoop([]() {
-      // uvw loop 线程：mailbox 的 DrainAll 由 BtRuntime 在 TickAll 前调用
-      // 这里只做最小通知，实际 drain 在下一帧 TickAll 开始时执行
-    });
-  });
-
-  // BT Runtime
+  // BT Runtime（需在 wakeup callback 设置前创建，否则 weak_ptr 为空）
   bt_runtime_ = CreateBtRuntime();
   auto status = bt_runtime_->Initialize();
   if (!status) return status;
+
+  // 将 TBB 结果写入 mailbox 后触发完整 wakeup 链路：
+  //   TBB worker → mailbox.Post() → notify_cb
+  //   → PostToLoop（投入 uvw loop 线程）
+  //   → DrainAll（incoming_ → ready_ 并逐条回调）
+  //   → RequestWakeup(owner_entity)
+  //   → 下一帧 TickAll Phase 1 优先 tick 该实体
+  auto mailbox_ptr   = executor->Mailbox_shared();
+  auto bt_runtime_wk = std::weak_ptr<IBtRuntime>(bt_runtime_);
+  executor->SetWakeupCallback(
+      [event_loop_ptr = event_loop.get(),
+       mailbox_ptr,
+       bt_runtime_wk]() {
+        event_loop_ptr->PostToLoop(
+            [mailbox_ptr, bt_runtime_wk]() {
+              // 在 uvw loop 线程：批量 drain，逐条 RequestWakeup
+              mailbox_ptr->DrainAll([bt_runtime_wk](JobResult r) {
+                if (auto bt = bt_runtime_wk.lock()) {
+                  if (r.owner_entity != kInvalidEntityId) {
+                    bt->RequestWakeup(r.owner_entity);
+                  }
+                }
+              });
+            });
+      });
 
   // Command Bus
   command_bus_ = CreateInProcessCommandBus();

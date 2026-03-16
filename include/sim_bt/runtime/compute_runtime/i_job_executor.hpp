@@ -26,6 +26,10 @@ struct JobDescriptor {
   // 调度优先级，决定进入哪个 arena。
   JobPriority priority = JobPriority::kNormal;
 
+  // 提交此 job 的实体 ID，框架自动写入 JobResult::owner_entity，
+  // 供 DrainAll consumer 调用 BtRuntime::RequestWakeup 时使用。
+  EntityId owner_entity = kInvalidEntityId;
+
   // 提交者标识（用于日志和调试）。
   std::string submitter_name;
 };
@@ -55,6 +59,9 @@ class IJobExecutor {
 
   // 获取绑定的结果邮箱，供 BT 节点查询结果。
   virtual IResultMailbox& Mailbox() = 0;
+
+  // 获取邮箱的 shared_ptr，供 sim_host 接入 DrainAll 通知链。
+  virtual std::shared_ptr<IResultMailbox> Mailbox_shared() = 0;
 
   // 关闭 executor：停止接受新任务，等待所有 in-flight 任务结束。
   // 幂等，线程安全。

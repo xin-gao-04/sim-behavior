@@ -20,8 +20,9 @@ JobHandlePtr AsyncActionContextImpl::SubmitCpuJob(
   timed_out_.store(false, std::memory_order_relaxed);
 
   JobDescriptor desc;
-  desc.priority = priority;
-  desc.task     = std::move(task);
+  desc.priority     = priority;
+  desc.owner_entity = owner_;  // 框架自动携带，DrainAll 后可直接 RequestWakeup
+  desc.task         = std::move(task);
 
   active_handle_ = executor_->Submit(std::move(desc));
 

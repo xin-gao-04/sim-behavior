@@ -47,6 +47,7 @@ class TbbJobExecutor : public IJobExecutor {
 
   JobHandlePtr Submit(JobDescriptor descriptor) override;
   IResultMailbox& Mailbox() override;
+  std::shared_ptr<IResultMailbox> Mailbox_shared() override { return mailbox_; }
   void Shutdown() override;
   size_t PendingJobCount() const override;
 

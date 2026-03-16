@@ -15,8 +15,9 @@ namespace sim_bt {
 // payload 由调用者负责解释（type-erased），避免邮箱依赖具体业务类型。
 // ─────────────────────────────────────────────────────────────────────────────
 struct JobResult {
-  uint64_t  job_id    = 0;
-  bool      succeeded = false;
+  uint64_t  job_id       = 0;
+  EntityId  owner_entity = kInvalidEntityId;  // 提交此 job 的实体，由框架自动填充
+  bool      succeeded    = false;
   std::any  payload;           // 业务结果，由节点负责 any_cast
   std::string error_message;  // succeeded == false 时的错误描述
 };

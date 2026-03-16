@@ -1,6 +1,8 @@
 add_library(simbehavior_bt_nodes STATIC
   async_action_base.cpp
-  # 以下节点在后续迭代中添加：
+  condition_base.cpp
+  sync_action_base.cpp
+  # 以下具体节点在后续迭代中添加：
   # condition/has_target_condition.cpp
   # action/sync/move_to_action.cpp
   # action/async/path_plan_action.cpp
