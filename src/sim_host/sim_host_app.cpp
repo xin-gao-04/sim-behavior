@@ -191,6 +191,20 @@ void SimHostApp::DisbandGroup(GroupId group_id) {
   group_bundles_.erase(it);
 }
 
+// ── Phase 4：性能治理 ──────────────────────────────────────────────────────────
+
+SimStatus SimHostApp::EnableTreeDebugLogger(const std::string& db_path) {
+  return bt_runtime_->EnableSqliteLogger(db_path);
+}
+
+void SimHostApp::SetTickPolicy(IBtRuntime::TickPolicy policy) {
+  bt_runtime_->SetTickPolicy(policy);
+}
+
+IBtRuntime::TickStats SimHostApp::LastTickStats() const {
+  return bt_runtime_->LastTickStats();
+}
+
 void SimHostApp::Run() {
   TickLoop();
 }

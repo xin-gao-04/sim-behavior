@@ -135,6 +135,36 @@ class IBtRuntime {
   // ── 统计 ────────────────────────────────────────────────────────────────────
 
   virtual size_t ActiveTreeCount() const = 0;
+
+  // ── Phase 4：性能治理 ────────────────────────────────────────────────────────
+
+  // 每帧 TickAll 的运行时统计数据。
+  struct TickStats {
+    SimTimeMs sim_time_ms   = 0;  ///< 当前帧仿真时间（毫秒）
+    int64_t   duration_us   = 0;  ///< TickAll 总耗时（微秒，wall-clock）
+    size_t    tree_count    = 0;  ///< 本帧实际执行 Tick() 的树数量
+    size_t    skipped_count = 0;  ///< 跳过的空闲树数量（kSkipIdle 策略下）
+    size_t    wakeup_count  = 0;  ///< 本帧从 wakeup 队列处理的实体数量
+  };
+
+  // 控制每帧 TickAll 是否跳过根节点非 RUNNING 的树。
+  //   kTickAll   — 默认，逐帧 tick 所有树（根节点有自然循环机制时使用）。
+  //   kSkipIdle  — 跳过 !HasRunningNodes() 的树，大量实体时节省 CPU；
+  //                树需要通过 RequestWakeup 重新激活。
+  enum class TickPolicy { kTickAll, kSkipIdle };
+
+  // 设置 tick 策略（须在 BT Tick Domain 调用，不可与 TickAll 并发）。
+  virtual void SetTickPolicy(TickPolicy policy) = 0;
+
+  // 返回上一帧 TickAll 的统计数据（BT Tick Domain 访问，无锁）。
+  virtual TickStats LastTickStats() const = 0;
+
+  // 为当前所有树附加 SQLite 调试日志（可选，默认空实现）。
+  // db_path 须以 ".db3" 或 ".btdb" 结尾（Groot2 兼容性要求）。
+  // 须在所有实体 SpawnEntity() 之后调用。
+  virtual SimStatus EnableSqliteLogger(const std::string& /*db_path*/) {
+    return SimStatus::Ok();
+  }
 };
 
 using BtRuntimePtr = std::shared_ptr<IBtRuntime>;

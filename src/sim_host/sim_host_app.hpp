@@ -67,6 +67,19 @@ class SimHostApp {
   // 解散编队：清空成员的 group_ctx（设为 nullptr），删除 GroupBundle。
   void DisbandGroup(GroupId group_id);
 
+  // ── Phase 4：性能治理 ──────────────────────────────────────────────────────
+
+  // 为所有已 Spawn 的树附加 SQLite 节点状态迁移日志（开发调试专用）。
+  // db_path 须以 ".db3" 或 ".btdb" 结尾（Groot2 兼容性要求）。
+  // 须在 SpawnEntity() 之后、Run() 之前调用。
+  SimStatus EnableTreeDebugLogger(const std::string& db_path);
+
+  // 设置 Tick 策略（kTickAll 每帧 tick 全部树；kSkipIdle 跳过非 RUNNING 树）。
+  void SetTickPolicy(IBtRuntime::TickPolicy policy);
+
+  // 返回上一帧 TickAll 的性能统计（须在 BT Tick Domain 中读取）。
+  IBtRuntime::TickStats LastTickStats() const;
+
   // ── 获取各运行时（供外部注册节点等使用） ─────────────────────────────────
 
   IBtRuntime&              BtRuntime()        { return *bt_runtime_; }

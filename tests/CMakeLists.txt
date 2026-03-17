@@ -13,6 +13,8 @@ add_executable(sim_behavior_tests
   test_group_context.cpp
   # Phase 3 BusAdapter：UDP 回环 + CommandBus 出站转发
   test_bus_adapter.cpp
+  # Phase 4 性能治理：arena 隔离 + TickStats + kSkipIdle
+  test_phase4_perf.cpp
 )
 
 target_include_directories(sim_behavior_tests

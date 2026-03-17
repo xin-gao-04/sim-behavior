@@ -4,11 +4,15 @@
 #include "sim_bt/runtime/bt_runtime/i_bt_runtime.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
+#include <behaviortree_cpp/loggers/bt_sqlite_logger.h>
 
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <unordered_map>
+#include <vector>
 
 #include "sim_bt/common/sim_bt_log.hpp"
 
@@ -45,6 +49,9 @@ class BtTreeInstance : public ITreeInstance {
   bool HasRunningNodes() const override {
     return tree_.rootNode()->status() == BT::NodeStatus::RUNNING;
   }
+
+  // 暴露内部 BT::Tree 引用（仅供 BtRuntimeImpl 使用，如 SqliteLogger 附加）。
+  BT::Tree& GetBtTree() { return tree_; }
 
  private:
   EntityId owner_;
@@ -150,7 +157,9 @@ class BtRuntimeImpl : public IBtRuntime {
   }
 
   void TickAll(SimTimeMs sim_time_ms) override {
-    // 先处理 wakeup 队列，确保外部请求在本帧生效
+    auto t0 = std::chrono::steady_clock::now();
+
+    // Phase 1：处理 wakeup 队列，确保外部请求在本帧生效
     std::queue<EntityId> wakeups;
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -168,11 +177,29 @@ class BtRuntimeImpl : public IBtRuntime {
       TickEntityLocked(id);
     }
 
-    // 逐实体 tick 所有活跃树
-    std::lock_guard<std::mutex> lock(mu_);
-    for (auto& kv : trees_) {
-      kv.second->Tick();
+    // Phase 2：逐实体 tick（kSkipIdle 策略下跳过根节点非 RUNNING 的树）
+    size_t ticked = 0, skipped = 0;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      for (auto& kv : trees_) {
+        if (tick_policy_ == TickPolicy::kSkipIdle &&
+            !kv.second->HasRunningNodes()) {
+          ++skipped;
+          continue;
+        }
+        kv.second->Tick();
+        ++ticked;
+      }
     }
+
+    // 记录本帧统计
+    auto dur_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+    last_tick_stats_.sim_time_ms   = sim_time_ms;
+    last_tick_stats_.duration_us   = dur_us;
+    last_tick_stats_.tree_count    = ticked;
+    last_tick_stats_.skipped_count = skipped;
+    last_tick_stats_.wakeup_count  = wakeup_count;
   }
 
   void TickEntity(EntityId entity_id) override {
@@ -188,6 +215,36 @@ class BtRuntimeImpl : public IBtRuntime {
   size_t ActiveTreeCount() const override {
     std::lock_guard<std::mutex> lock(mu_);
     return trees_.size();
+  }
+
+  // ── Phase 4 ─────────────────────────────────────────────────────────────────
+
+  void SetTickPolicy(TickPolicy policy) override {
+    tick_policy_ = policy;
+  }
+
+  TickStats LastTickStats() const override {
+    return last_tick_stats_;
+  }
+
+  SimStatus EnableSqliteLogger(const std::string& db_path) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    bool first = true;
+    for (auto& kv : trees_) {
+      try {
+        auto logger = std::make_unique<BT::SqliteLogger>(
+            kv.second->GetBtTree(), db_path, /*append=*/!first);
+        first = false;
+        sqlite_loggers_.push_back(std::move(logger));
+      } catch (const std::exception& ex) {
+        return SimStatus::Err(1,
+            std::string("EnableSqliteLogger failed for entity ")
+            + std::to_string(kv.first) + ": " + ex.what());
+      }
+    }
+    SIMBT_LOG_INFO_S("BtRuntime: attached SqliteLogger to "
+        << sqlite_loggers_.size() << " trees → " << db_path);
+    return SimStatus::Ok();
   }
 
   // 向工厂注册节点（供外部调用）
@@ -209,6 +266,11 @@ class BtRuntimeImpl : public IBtRuntime {
   std::queue<EntityId> wakeup_queue_;
 
   bool initialized_ = false;
+
+  // Phase 4
+  TickPolicy tick_policy_   = TickPolicy::kTickAll;
+  TickStats  last_tick_stats_;
+  std::vector<std::unique_ptr<BT::SqliteLogger>> sqlite_loggers_;
 };
 
 // ── 工厂函数 ─────────────────────────────────────────────────────────────────
