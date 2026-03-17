@@ -754,12 +754,12 @@ CMake 最低版本：**3.24** | C++ 标准：**C++17**
 - [x] uvw UDP `BusAdapter`（`UvwUdpBusAdapter`）
 - [x] `CommandBus` 接仿真宿主（`InProcessCommandBus` 出站转发）
 
-### Phase 4 — 性能治理（当前）
+### Phase 4 — 性能治理 ✅
 
-- [ ] 多 arena 优先级验证
-- [ ] 实体分组批量 tick
-- [ ] 每帧 tick 耗时采样
-- [ ] `TraceLogger`（节点状态迁移日志）
+- [x] 多 arena 优先级验证（`ArenaIsolationTest` — high arena 不被 low arena 阻塞）
+- [x] 实体分组批量 tick（`kSkipIdle` 策略 — 跳过非 RUNNING 树）
+- [x] 每帧 tick 耗时采样（`IBtRuntime::TickStats` + `LastTickStats()`）
+- [x] `TraceLogger` 接口（`EnableSqliteLogger()` — 需 `BTCPP_SQLITE_LOGGING=ON` 启用）
 
 ---
 
@@ -1287,3 +1287,106 @@ command_bus->SetBusAdapter(bus_adapter, event_loop_runtime);
 ```
 
 `SetBusAdapter()` 内部持有 `mutex`，可在任意线程调用；但实际发布的 `Publish()` 始终在 uvw loop 线程执行，符合线程安全契约。
+
+---
+
+## 24. Phase 4：性能治理
+
+### 24.1 每帧 Tick 耗时采样（TickStats）
+
+`IBtRuntime::TickAll()` 执行完成后，统计数据存入 `last_tick_stats_`，可通过 `LastTickStats()` 在 BT Tick Domain 无锁读取：
+
+```cpp
+struct TickStats {
+  SimTimeMs sim_time_ms   = 0;  // 当前帧仿真时间（毫秒）
+  int64_t   duration_us   = 0;  // TickAll 总耗时（微秒，wall-clock）
+  size_t    tree_count    = 0;  // 本帧实际执行 Tick() 的树数量
+  size_t    skipped_count = 0;  // 跳过的空闲树数量（kSkipIdle 策略下）
+  size_t    wakeup_count  = 0;  // 本帧从 wakeup 队列处理的实体数量
+};
+```
+
+典型用法（在 TickLoop 后采样）：
+
+```cpp
+bt_runtime_->TickAll(sim_time_ms);
+auto stats = app.LastTickStats();
+if (stats.duration_us > 40000) {  // 超过 40ms（预算 50ms）时告警
+    LOG_WARN("TickAll slow: " + std::to_string(stats.duration_us) + "us");
+}
+```
+
+`SimHostApp::LastTickStats()` 是对 `bt_runtime_->LastTickStats()` 的直接转发，无锁，无拷贝开销。
+
+### 24.2 kSkipIdle 批量 Tick 优化
+
+默认策略 `kTickAll` 每帧 tick 所有树。当实体数量较多而大量树处于等待状态（`OnStart()` 已提交 TBB job，尚未 wakeup）时，可切换为 `kSkipIdle`：
+
+```cpp
+app.SetTickPolicy(IBtRuntime::TickPolicy::kSkipIdle);
+```
+
+`kSkipIdle` 在 Phase 2（全量 tick 循环）中跳过 `!HasRunningNodes()` 的树：
+
+```
+kTickAll  ：每帧 O(N) 次 tick，N = 总实体数
+kSkipIdle ：每帧 O(active) 次 tick，active = 根节点 RUNNING 的实体数
+```
+
+**注意事项**：
+
+- 跳过的树需通过 `RequestWakeup(entity_id)` 重新触发（TBB 任务完成时 WakeupBridge 自动调用）。
+- 若树的根节点使用 `AlwaysRunning` / `WhileDoElse` 等自然循环装饰器，根节点始终 RUNNING，`kSkipIdle` 不会跳过它们，行为与 `kTickAll` 等价。
+- `skipped_count` 计入 `TickStats`，可用于监控跳过率。
+
+### 24.3 多 Arena 隔离性
+
+TBB 三个 `task_arena` 提供 **资源隔离**（独立 worker 线程池），而非严格优先级调度：
+
+| Arena | 并发数（默认） | 典型用途 |
+|-------|-------------|---------|
+| high  | 2 | 战术决策、路径规划 |
+| normal| 4 | 通用感知计算 |
+| low   | 2 | 背景预取、统计聚合 |
+
+隔离性保证：`arena_low_` 的 worker 线程满负荷时，`arena_high_` 中的任务不会被阻塞等待（两者使用独立线程池）。这一点由 `ArenaIsolationTest.HighArenaNotBlockedByLowArenaSaturation` 验证。
+
+`ArenaConfig` 可在 `TbbJobExecutor` 构造时调整：
+
+```cpp
+TbbJobExecutor executor(ArenaConfig{
+    .high_concurrency   = 2,
+    .normal_concurrency = 4,
+    .low_concurrency    = 2,
+});
+```
+
+### 24.4 TraceLogger（节点状态迁移日志）
+
+`IBtRuntime::EnableSqliteLogger(db_path)` 为所有已创建的树附加 `BT::SqliteLogger`，将节点状态迁移（IDLE→RUNNING→SUCCESS/FAILURE）写入 SQLite 数据库，可用 Groot2 可视化调试。
+
+**前提条件**：编译时需启用 `BTCPP_SQLITE_LOGGING=ON`（当前默认 OFF，原因见 `cmake/Dependencies.cmake` 注释）：
+
+```bash
+cmake -B build -DBTCPP_SQLITE_LOGGING=ON -DCMAKE_PREFIX_PATH=/opt/homebrew
+cmake --build build
+```
+
+启用后的使用方式：
+
+```cpp
+SimHostApp app;
+app.Initialize();
+app.BtRuntime().LoadTreeFromXml(xml);
+for (auto id : entity_ids) app.SpawnEntity(id, "MyTree");
+
+// 须在 SpawnEntity() 之后、Run() 之前调用
+// db_path 必须以 ".db3" 或 ".btdb" 结尾
+auto status = app.EnableTreeDebugLogger("debug_session.btdb");
+// 每棵树附加一个 session，第一棵覆盖文件，后续 append=true
+
+app.Run();
+// 正常退出时 SqliteLogger 析构，flush 写盘
+```
+
+**注意**：`SqliteLogger` 在后台线程异步写入 SQLite，大规模实体（数百棵树、20Hz）时会成为性能瓶颈，仅在单实体调试场景开启。

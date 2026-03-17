@@ -4,7 +4,9 @@
 #include "sim_bt/runtime/bt_runtime/i_bt_runtime.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
+#ifdef BTCPP_SQLITE_LOGGING
 #include <behaviortree_cpp/loggers/bt_sqlite_logger.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -228,6 +230,7 @@ class BtRuntimeImpl : public IBtRuntime {
   }
 
   SimStatus EnableSqliteLogger(const std::string& db_path) override {
+#ifdef BTCPP_SQLITE_LOGGING
     std::lock_guard<std::mutex> lock(mu_);
     bool first = true;
     for (auto& kv : trees_) {
@@ -245,6 +248,11 @@ class BtRuntimeImpl : public IBtRuntime {
     SIMBT_LOG_INFO_S("BtRuntime: attached SqliteLogger to "
         << sqlite_loggers_.size() << " trees → " << db_path);
     return SimStatus::Ok();
+#else
+    (void)db_path;
+    return SimStatus::Err(1,
+        "EnableSqliteLogger: not available (BTCPP_SQLITE_LOGGING=OFF)");
+#endif
   }
 
   // 向工厂注册节点（供外部调用）
@@ -270,7 +278,9 @@ class BtRuntimeImpl : public IBtRuntime {
   // Phase 4
   TickPolicy tick_policy_   = TickPolicy::kTickAll;
   TickStats  last_tick_stats_;
+#ifdef BTCPP_SQLITE_LOGGING
   std::vector<std::unique_ptr<BT::SqliteLogger>> sqlite_loggers_;
+#endif
 };
 
 // ── 工厂函数 ─────────────────────────────────────────────────────────────────
