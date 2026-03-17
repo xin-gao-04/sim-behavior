@@ -45,9 +45,11 @@ namespace sim_bt {
 // ─────────────────────────────────────────────────────────────────────────────
 class SyncActionBase : public BT::SyncActionNode {
  public:
+  // ctx 可选（默认 nullptr）：
+  //   若不传，构造时自动从 Blackboard["__sync_ctx__"] 读取（多实体场景）。
   SyncActionBase(const std::string& name,
                  const BT::NodeConfig& config,
-                 SyncNodeContextPtr ctx);
+                 SyncNodeContextPtr ctx = nullptr);
 
   virtual ~SyncActionBase() = default;
 

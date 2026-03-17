@@ -6,7 +6,14 @@
 // 具体实现引用（内部 include，不暴露到 public interface）
 #include "../runtime/compute_runtime/tbb_job_executor.hpp"
 #include "../runtime/async_runtime/uvw_event_loop_runtime.hpp"
+#include "../runtime/bt_runtime/async_action_context_impl.hpp"
+#include "../runtime/bt_runtime/sync_node_context_impl.hpp"
+#include "../domain/entity/entity_context_impl.hpp"
 #include "sim_bt/common/sim_bt_log.hpp"
+
+// WorldSnapshot 具体实现（从 world_snapshot_impl.cpp 中定义）
+// 通过前向声明使用 SimpleWorldSnapshotProvider 工厂函数
+std::shared_ptr<sim_bt::IWorldSnapshotProvider> CreateSimpleWorldSnapshotProvider();
 
 namespace sim_bt {
 
@@ -70,11 +77,11 @@ SimStatus SimHostApp::Initialize() {
             });
       });
 
-  // Command Bus
+  // Command Bus（进程内同步实现）
   command_bus_ = CreateInProcessCommandBus();
 
-  // World Snapshot Provider（简单实现）
-  // snapshot_provider_ = std::make_shared<SimpleWorldSnapshotProvider>();
+  // WorldSnapshot Provider（空快照，每帧 Refresh 生成新帧快照）
+  snapshot_provider_ = CreateSimpleWorldSnapshotProvider();
 
   // 启动 EventLoop
   status = event_loop_->Start();
@@ -82,6 +89,56 @@ SimStatus SimHostApp::Initialize() {
 
   SIMBT_LOG_INFO("SimHostApp: initialization complete");
   return SimStatus::Ok();
+}
+
+SimStatus SimHostApp::SpawnEntity(EntityId entity_id,
+                                  const std::string& tree_name) {
+  SIMBT_LOG_INFO_S("SimHostApp: spawning entity=" << entity_id
+      << " tree=" << tree_name);
+
+  // 1. EntityContext — 实体私有状态（跨帧持久）
+  auto entity_ctx = std::make_shared<EntityContextImpl>(entity_id);
+
+  // 2. AsyncActionContext — 连接 TBB executor + uvw event loop + BT runtime
+  auto async_ctx = std::make_shared<AsyncActionContextImpl>(
+      entity_id,
+      job_executor_,
+      event_loop_,
+      bt_runtime_,
+      &current_sim_time_);
+
+  // 3. SyncNodeContext — 连接 EntityContext + WorldSnapshot + CommandBus
+  //    WorldSnapshot 取当前帧快照（裸指针，非拥有；每帧由 TickLoop 刷新）
+  const IWorldSnapshot* world_ptr =
+      snapshot_provider_ ? snapshot_provider_->Current().get() : nullptr;
+  auto sync_ctx = std::make_shared<SyncNodeContextImpl>(
+      entity_id,
+      entity_ctx,
+      command_bus_,
+      world_ptr,
+      &current_sim_time_);
+
+  // 4. 创建行为树，通过 Blackboard 注入两个上下文
+  auto result = bt_runtime_->CreateTree(entity_id, tree_name, async_ctx, sync_ctx);
+  if (!result.ok()) {
+    return result.status;
+  }
+
+  // 5. 保存上下文套件（DespawnEntity 时清理）
+  entity_bundles_[entity_id] = EntityBundle{
+      std::move(entity_ctx),
+      std::move(async_ctx),
+      std::move(sync_ctx)
+  };
+
+  SIMBT_LOG_INFO_S("SimHostApp: entity=" << entity_id << " spawned successfully");
+  return SimStatus::Ok();
+}
+
+void SimHostApp::DespawnEntity(EntityId entity_id) {
+  SIMBT_LOG_INFO_S("SimHostApp: despawning entity=" << entity_id);
+  bt_runtime_->DestroyTree(entity_id);
+  entity_bundles_.erase(entity_id);
 }
 
 void SimHostApp::Run() {
@@ -105,8 +162,10 @@ void SimHostApp::TickLoop() {
 
     current_sim_time_ += 50;  // 每帧推进 50ms
 
-    // 1. 刷新世界快照
-    // snapshot_provider_->Refresh(current_sim_time_);
+    // 1. 刷新世界快照（新帧开始时生成一致性快照）
+    if (snapshot_provider_) {
+      snapshot_provider_->Refresh(current_sim_time_);
+    }
 
     // 2. Tick 所有活跃实体的行为树
     bt_runtime_->TickAll(current_sim_time_);

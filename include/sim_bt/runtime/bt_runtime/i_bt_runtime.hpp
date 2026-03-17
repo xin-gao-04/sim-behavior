@@ -1,8 +1,13 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
+#include <behaviortree_cpp/bt_factory.h>
+
+#include "sim_bt/bt_nodes/i_async_action_context.hpp"
+#include "sim_bt/bt_nodes/i_sync_node_context.hpp"
 #include "sim_bt/common/result.hpp"
 #include "sim_bt/common/types.hpp"
 
@@ -63,6 +68,28 @@ class IBtRuntime {
   virtual SimStatus Initialize() = 0;
   virtual void Shutdown() = 0;
 
+  // ── 节点注册 ────────────────────────────────────────────────────────────────
+
+  // 注册一个节点类型（通过 manifest + BT::NodeBuilder 闭包）。
+  // 须在 LoadTreeFromXml/File 之前调用，否则 XML 解析时找不到节点定义。
+  //
+  // 直接使用 BT::TreeNodeManifest 版本，避免在虚函数中引入模板类型参数。
+  // 多实体场景推荐：builder 中无需捕获 ctx，节点从 Blackboard 自动读取。
+  virtual void RegisterNodeBuilder(const BT::TreeNodeManifest& manifest,
+                                   BT::NodeBuilder             builder) = 0;
+
+  // 便捷模板包装：从 NodeT::providedPorts() 自动构建 manifest，
+  // 创建以 (name, config) 构造节点的默认 builder。
+  // 节点 ctx 参数须有默认值 nullptr（从 Blackboard 读取）。
+  template <typename NodeT>
+  void RegisterNodeType(const std::string& name) {
+    auto manifest = BT::CreateManifest<NodeT>(name, NodeT::providedPorts());
+    RegisterNodeBuilder(manifest,
+        [](const std::string& n, const BT::NodeConfig& c) {
+          return std::make_unique<NodeT>(n, c);
+        });
+  }
+
   // ── 树工厂 ──────────────────────────────────────────────────────────────────
 
   // 从 XML 字符串加载树定义（注册到工厂但不实例化）。
@@ -74,8 +101,16 @@ class IBtRuntime {
   // ── 实例管理 ────────────────────────────────────────────────────────────────
 
   // 为实体创建指定名称的树实例。
-  virtual SimResult<TreeInstancePtr> CreateTree(EntityId entity_id,
-                                                 const std::string& tree_name) = 0;
+  //
+  // async_ctx / sync_ctx：可选的 per-entity 上下文；
+  //   若提供，会注入到树的私有 Blackboard（"__async_ctx__" / "__sync_ctx__"），
+  //   节点在构造时自动从 Blackboard 读取（无需在 registerBuilder 捕获 ctx）。
+  //   若不提供，节点须通过 registerBuilder 闭包显式注入 ctx。
+  virtual SimResult<TreeInstancePtr> CreateTree(
+      EntityId entity_id,
+      const std::string& tree_name,
+      AsyncActionContextPtr async_ctx = nullptr,
+      SyncNodeContextPtr    sync_ctx  = nullptr) = 0;
 
   // 销毁实体的树实例（若有 RUNNING 节点会先 Halt）。
   virtual void DestroyTree(EntityId entity_id) = 0;

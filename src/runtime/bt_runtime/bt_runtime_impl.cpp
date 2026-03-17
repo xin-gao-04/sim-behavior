@@ -12,6 +12,10 @@
 
 #include "sim_bt/common/sim_bt_log.hpp"
 
+// Blackboard key 常量：节点通过这两个 key 从 Blackboard 取运行时上下文
+static constexpr const char* kBlackboardKeyAsyncCtx = "__async_ctx__";
+static constexpr const char* kBlackboardKeySyncCtx  = "__sync_ctx__";
+
 namespace sim_bt {
 
 // ── 内部 TreeInstance ─────────────────────────────────────────────────────────
@@ -54,6 +58,13 @@ class BtRuntimeImpl : public IBtRuntime {
   BtRuntimeImpl() = default;
   ~BtRuntimeImpl() override { Shutdown(); }
 
+  void RegisterNodeBuilder(const BT::TreeNodeManifest& manifest,
+                           BT::NodeBuilder             builder) override {
+    factory_.registerBuilder(manifest, std::move(builder));
+    SIMBT_LOG_INFO_S("BtRuntime: registered node type \""
+        << manifest.registration_ID << "\"");
+  }
+
   SimStatus Initialize() override {
     initialized_ = true;
     SIMBT_LOG_INFO("BtRuntime: initialized");
@@ -89,17 +100,33 @@ class BtRuntimeImpl : public IBtRuntime {
     }
   }
 
-  SimResult<TreeInstancePtr> CreateTree(EntityId entity_id,
-                                         const std::string& tree_name) override {
+  SimResult<TreeInstancePtr> CreateTree(
+      EntityId entity_id,
+      const std::string& tree_name,
+      AsyncActionContextPtr async_ctx = nullptr,
+      SyncNodeContextPtr    sync_ctx  = nullptr) override {
     try {
-      BT::Tree bt_tree = factory_.createTree(tree_name);
+      // 为每棵树创建私有 Blackboard，并将 per-entity 上下文注入其中。
+      // 节点在构造时（或首次 tick 前）从 Blackboard 读取 ctx，
+      // 无需在 registerBuilder 里逐节点捕获实体特定数据。
+      auto blackboard = BT::Blackboard::create();
+      if (async_ctx) {
+        blackboard->set<AsyncActionContextPtr>(kBlackboardKeyAsyncCtx, async_ctx);
+      }
+      if (sync_ctx) {
+        blackboard->set<SyncNodeContextPtr>(kBlackboardKeySyncCtx, sync_ctx);
+      }
+
+      BT::Tree bt_tree = factory_.createTree(tree_name, blackboard);
       auto inst = std::make_shared<BtTreeInstance>(entity_id, std::move(bt_tree));
       {
         std::lock_guard<std::mutex> lock(mu_);
         trees_[entity_id] = inst;
       }
       SIMBT_LOG_INFO_S("BtRuntime: created tree \"" << tree_name
-          << "\" for entity=" << entity_id);
+          << "\" for entity=" << entity_id
+          << " async_ctx=" << (async_ctx ? "yes" : "no")
+          << " sync_ctx="  << (sync_ctx  ? "yes" : "no"));
       return SimResult<TreeInstancePtr>(std::static_pointer_cast<ITreeInstance>(inst));
     } catch (const std::exception& ex) {
       return SimResult<TreeInstancePtr>(

@@ -7,6 +7,8 @@ add_executable(sim_behavior_tests
   test_async_action_base.cpp
   # 跨库交互边界测试：TbbJobExecutor ↔ DefaultResultMailbox ↔ UvwEventLoopRuntime
   test_cross_library_integration.cpp
+  # Phase 2 多实体：Blackboard ctx 注入 + 实体隔离性 + 并发完成
+  test_multi_entity.cpp
 )
 
 target_include_directories(sim_behavior_tests

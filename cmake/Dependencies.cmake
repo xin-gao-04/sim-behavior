@@ -248,11 +248,18 @@ message(STATUS "[sim-behavior] uvw::uvw ready")
 # ║  放置为：third_party/BehaviorTree.CPP.zip                               ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 if(NOT TARGET behaviortree_cpp AND NOT TARGET BT::behaviortree_cpp)
+  # BTCPP_SHARED_LIBS=OFF: build as a static library.
+  # corekit (dylib) and BehaviorTree.CPP both bundle their own tinyxml2 copy
+  # (corekit v10, BT.CPP v11).  If BT.CPP is also a dylib, both dylibs export
+  # the same tinyxml2 mangled names → macOS dyld ODR conflict at runtime.
+  # With a static library the symbols are resolved once at final link time
+  # without any dylib-to-dylib symbol collision.
   _dep_add(behaviortree_cpp BehaviorTree.CPP
     https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.9.0
     "BTCPP_GROOT_INTERFACE=OFF" "BTCPP_SQLITE_LOGGING=OFF"
     "BTCPP_UNIT_TESTS=OFF" "BTCPP_BUILD_TOOLS=OFF"
     "BTCPP_EXAMPLES=OFF"   "BUILD_TESTING=OFF"
+    "BTCPP_SHARED_LIBS=OFF"
   )
 endif()
 if(NOT TARGET BT::behaviortree_cpp)
@@ -267,6 +274,13 @@ if(NOT TARGET BT::behaviortree_cpp)
   endif()
 endif()
 message(STATUS "[sim-behavior] BT::behaviortree_cpp ready")
+
+# BT.CPP bundles tinyxml2 (v11) and corekit also bundles tinyxml2 (v10).
+# Both dylibs export the same mangled tinyxml2 symbols, causing an ODR
+# conflict that corrupts XML parsing at runtime.  Fix: compile BT.CPP's
+# bundled tinyxml2 with -fvisibility=hidden so its symbols are NOT exported
+# from libbehaviortree_cpp.dylib; BT.CPP's own translation units can still
+# access the hidden symbols via the same DSO.
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

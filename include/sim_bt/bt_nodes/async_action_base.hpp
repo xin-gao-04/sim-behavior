@@ -43,9 +43,13 @@ namespace sim_bt {
 // ─────────────────────────────────────────────────────────────────────────────
 class AsyncActionBase : public BT::StatefulActionNode {
  public:
+  // ctx 可选：
+  //   - 若显式传入，则使用该 ctx（适合 registerBuilder 捕获 ctx 的场景）。
+  //   - 若为 nullptr，构造时自动从 Blackboard["__async_ctx__"] 读取
+  //     （需由 BtRuntimeImpl::CreateTree 提前注入，适合多实体场景）。
   AsyncActionBase(const std::string& name,
                   const BT::NodeConfig& config,
-                  AsyncActionContextPtr ctx);
+                  AsyncActionContextPtr ctx = nullptr);
 
   virtual ~AsyncActionBase() = default;
 

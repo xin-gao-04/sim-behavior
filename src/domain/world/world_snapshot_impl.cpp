@@ -66,3 +66,8 @@ class SimpleWorldSnapshotProvider : public IWorldSnapshotProvider {
 };
 
 }  // namespace sim_bt
+
+// ── 工厂函数（跨模块可见）─────────────────────────────────────────────────────
+std::shared_ptr<sim_bt::IWorldSnapshotProvider> CreateSimpleWorldSnapshotProvider() {
+  return std::make_shared<sim_bt::SimpleWorldSnapshotProvider>();
+}
