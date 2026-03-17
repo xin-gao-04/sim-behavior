@@ -19,7 +19,7 @@ class GroupContextImpl : public IGroupContext {
     return std::find(members_.begin(), members_.end(), id) != members_.end();
   }
 
-  void AddMember(EntityId id) {
+  void AddMember(EntityId id) override {
     if (!IsMember(id)) members_.push_back(id);
   }
 
@@ -56,5 +56,16 @@ class GroupContextImpl : public IGroupContext {
   std::unordered_map<std::string, bool> rules_;
   uint64_t last_plan_job_id_ = 0;
 };
+
+// ── 工厂函数 ─────────────────────────────────────────────────────────────────
+
+std::shared_ptr<IGroupContext> CreateGroupContext(GroupId id) {
+  return std::make_shared<GroupContextImpl>(id);
+}
+
+// 允许外部直接取得具体类型（供 SimHostApp::AssignGroup 调用 AddMember）
+std::shared_ptr<GroupContextImpl> CreateGroupContextImpl(GroupId id) {
+  return std::make_shared<GroupContextImpl>(id);
+}
 
 }  // namespace sim_bt

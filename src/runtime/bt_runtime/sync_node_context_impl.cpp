@@ -7,10 +7,12 @@ SyncNodeContextImpl::SyncNodeContextImpl(
     std::shared_ptr<IEntityContext>  entity_ctx,
     std::shared_ptr<ICommandBus>     command_bus,
     const IWorldSnapshot*            world,
-    SimTimeMs*                       sim_time_ptr)
+    SimTimeMs*                       sim_time_ptr,
+    std::shared_ptr<IGroupContext>   group_ctx)
     : owner_(owner),
       entity_ctx_(std::move(entity_ctx)),
       command_bus_(std::move(command_bus)),
+      group_ctx_(std::move(group_ctx)),
       world_(world),
       sim_time_ptr_(sim_time_ptr) {}
 

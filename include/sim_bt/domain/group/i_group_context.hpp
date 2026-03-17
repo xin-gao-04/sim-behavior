@@ -28,6 +28,10 @@ class IGroupContext {
 
   // ── 成员管理 ────────────────────────────────────────────────────────────────
 
+  // 添加成员（重复加入时幂等）。通常由 SimHostApp::AssignGroup 调用，
+  // 节点侧只读取 Members() / IsMember()，不直接修改。
+  virtual void AddMember(EntityId id) = 0;
+
   virtual const std::vector<EntityId>& Members() const = 0;
   virtual bool IsMember(EntityId id) const = 0;
 

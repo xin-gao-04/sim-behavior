@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <thread>
+#include <vector>
 
 // 具体实现引用（内部 include，不暴露到 public interface）
 #include "../runtime/compute_runtime/tbb_job_executor.hpp"
@@ -18,8 +19,9 @@ std::shared_ptr<sim_bt::IWorldSnapshotProvider> CreateSimpleWorldSnapshotProvide
 namespace sim_bt {
 
 // 工厂函数声明（defined in their respective .cpp files）
-std::shared_ptr<IBtRuntime>  CreateBtRuntime();
-std::shared_ptr<ICommandBus> CreateInProcessCommandBus();
+std::shared_ptr<IBtRuntime>     CreateBtRuntime();
+std::shared_ptr<ICommandBus>    CreateInProcessCommandBus();
+std::shared_ptr<IGroupContext>  CreateGroupContext(GroupId id);
 
 SimHostApp::SimHostApp() {
   // 尽早初始化进程级 logger，使后续所有 SIMBT_LOG_* 调用立即生效
@@ -139,6 +141,54 @@ void SimHostApp::DespawnEntity(EntityId entity_id) {
   SIMBT_LOG_INFO_S("SimHostApp: despawning entity=" << entity_id);
   bt_runtime_->DestroyTree(entity_id);
   entity_bundles_.erase(entity_id);
+}
+
+SimStatus SimHostApp::AssignGroup(GroupId group_id,
+                                   const std::vector<EntityId>& members) {
+  SIMBT_LOG_INFO_S("SimHostApp: assigning group=" << group_id
+      << " members=" << members.size());
+
+  // 取已有编队或新建
+  auto it = group_bundles_.find(group_id);
+  if (it == group_bundles_.end()) {
+    GroupBundle bundle;
+    bundle.group_ctx = CreateGroupContext(group_id);
+    group_bundles_[group_id] = std::move(bundle);
+    it = group_bundles_.find(group_id);
+  }
+  auto& bundle = it->second;
+
+  for (EntityId eid : members) {
+    auto eb_it = entity_bundles_.find(eid);
+    if (eb_it == entity_bundles_.end()) {
+      SIMBT_LOG_WARN_S("SimHostApp: AssignGroup entity=" << eid << " not found, skipped");
+      continue;
+    }
+    bundle.group_ctx->AddMember(eid);
+    bundle.members.push_back(eid);
+    // 注入到 SyncNodeContextImpl（向下转型是安全的，SimHostApp 创建的是 SyncNodeContextImpl）
+    auto* sync_impl =
+        static_cast<SyncNodeContextImpl*>(eb_it->second.sync_ctx.get());
+    sync_impl->SetGroupContext(bundle.group_ctx);
+  }
+
+  return SimStatus::Ok();
+}
+
+void SimHostApp::DisbandGroup(GroupId group_id) {
+  SIMBT_LOG_INFO_S("SimHostApp: disbanding group=" << group_id);
+  auto it = group_bundles_.find(group_id);
+  if (it == group_bundles_.end()) return;
+
+  // 清除所有成员的 group_ctx
+  for (EntityId eid : it->second.members) {
+    auto eb_it = entity_bundles_.find(eid);
+    if (eb_it == entity_bundles_.end()) continue;
+    auto* sync_impl =
+        static_cast<SyncNodeContextImpl*>(eb_it->second.sync_ctx.get());
+    sync_impl->SetGroupContext(nullptr);
+  }
+  group_bundles_.erase(it);
 }
 
 void SimHostApp::Run() {

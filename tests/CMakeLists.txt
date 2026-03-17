@@ -9,6 +9,10 @@ add_executable(sim_behavior_tests
   test_cross_library_integration.cpp
   # Phase 2 多实体：Blackboard ctx 注入 + 实体隔离性 + 并发完成
   test_multi_entity.cpp
+  # Phase 2 GroupContext：编队共享状态 + AssignGroup/DisbandGroup
+  test_group_context.cpp
+  # Phase 3 BusAdapter：UDP 回环 + CommandBus 出站转发
+  test_bus_adapter.cpp
 )
 
 target_include_directories(sim_behavior_tests
@@ -20,6 +24,7 @@ target_include_directories(sim_behavior_tests
 
 target_link_libraries(sim_behavior_tests
   PRIVATE
+    simbehavior_sim_host          # Phase 2/3: SimHostApp（含 AssignGroup/DisbandGroup）
     simbehavior_bt_nodes
     simbehavior_bt_runtime
     simbehavior_async_runtime

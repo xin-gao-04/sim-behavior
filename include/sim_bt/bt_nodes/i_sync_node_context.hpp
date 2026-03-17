@@ -5,6 +5,7 @@
 #include "sim_bt/adapters/i_command_bus.hpp"
 #include "sim_bt/common/types.hpp"
 #include "sim_bt/domain/entity/i_entity_context.hpp"
+#include "sim_bt/domain/group/i_group_context.hpp"
 #include "sim_bt/domain/world/i_world_snapshot.hpp"
 
 namespace sim_bt {
@@ -44,6 +45,13 @@ class ISyncNodeContext {
 
   // 命令总线，用于向仿真宿主派发动作命令（move_to, cease_fire 等）。
   virtual ICommandBus& CommandBus() = 0;
+
+  // ── 编队共享上下文 ─────────────────────────────────────────────────────────
+
+  // 当前实体所属编队的共享上下文。如实体未加入任何编队则返回 nullptr。
+  // BT 节点只在 BT Tick Domain 内访问，编队成员 tick 串行化，无需加锁。
+  virtual IGroupContext* Group() = 0;
+  virtual const IGroupContext* Group() const = 0;
 
   // ── 上下文查询 ────────────────────────────────────────────────────────────
 

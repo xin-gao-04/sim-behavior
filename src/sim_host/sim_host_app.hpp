@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "sim_bt/runtime/bt_runtime/i_bt_runtime.hpp"
 #include "sim_bt/runtime/async_runtime/i_event_loop_runtime.hpp"
@@ -9,6 +10,7 @@
 #include "sim_bt/bt_nodes/i_async_action_context.hpp"
 #include "sim_bt/bt_nodes/i_sync_node_context.hpp"
 #include "sim_bt/domain/entity/i_entity_context.hpp"
+#include "sim_bt/domain/group/i_group_context.hpp"
 #include "sim_bt/domain/world/i_world_snapshot.hpp"
 #include "sim_bt/adapters/i_command_bus.hpp"
 #include "sim_bt/common/result.hpp"
@@ -55,6 +57,16 @@ class SimHostApp {
   // 销毁实体的行为树和上下文（Halt 后清理）。
   void DespawnEntity(EntityId entity_id);
 
+  // ── 编队管理 ──────────────────────────────────────────────────────────────
+
+  // 创建编队并将指定实体加入。
+  // 所有实体须已通过 SpawnEntity() 注册，否则跳过未知实体。
+  // 同一实体可更换编队（旧编队中会保留成员 ID，但 ctx 指向新编队）。
+  SimStatus AssignGroup(GroupId group_id, const std::vector<EntityId>& members);
+
+  // 解散编队：清空成员的 group_ctx（设为 nullptr），删除 GroupBundle。
+  void DisbandGroup(GroupId group_id);
+
   // ── 获取各运行时（供外部注册节点等使用） ─────────────────────────────────
 
   IBtRuntime&              BtRuntime()        { return *bt_runtime_; }
@@ -79,6 +91,13 @@ class SimHostApp {
     std::shared_ptr<ISyncNodeContext>     sync_ctx;
   };
   std::unordered_map<EntityId, EntityBundle> entity_bundles_;
+
+  // 编队套件（随 AssignGroup 创建，DisbandGroup 销毁）
+  struct GroupBundle {
+    std::shared_ptr<IGroupContext>   group_ctx;
+    std::vector<EntityId>            members;
+  };
+  std::unordered_map<GroupId, GroupBundle> group_bundles_;
 
   SimTimeMs current_sim_time_ = 0;
   bool      stop_requested_   = false;
