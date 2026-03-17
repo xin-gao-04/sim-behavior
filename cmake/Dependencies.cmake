@@ -241,7 +241,36 @@ message(STATUS "[sim-behavior] uvw::uvw ready")
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  4. BehaviorTree.CPP v4                                                 ║
+# ║  4. SQLite3 amalgamation（vendored）                                    ║
+# ║                                                                          ║
+# ║  来源：https://www.sqlite.org/2024/sqlite-amalgamation-3470200.zip      ║
+# ║  放置为：third_party/sqlite3/sqlite3.c + sqlite3.h + sqlite3ext.h      ║
+# ║                                                                          ║
+# ║  必须在 BehaviorTree.CPP 之前初始化，以便 BTCPP_SQLITE_LOGGING=ON 时   ║
+# ║  BT.CPP 的 find_package(SQLite3) 直接命中此 vendored 目标。            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+if(NOT TARGET sqlite3)
+  set(_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3")
+  if(EXISTS "${_sqlite_dir}/CMakeLists.txt")
+    message(STATUS "[sim-behavior] sqlite3: using vendored amalgamation ${_sqlite_dir}")
+    add_subdirectory("${_sqlite_dir}"
+                     "${CMAKE_BINARY_DIR}/third_party/sqlite3")
+    # 将 vendored 路径暴露为标准 FindSQLite3 变量，让 BT.CPP 的
+    # find_package(SQLite3) 直接命中，跳过系统路径搜索。
+    set(SQLite3_FOUND        TRUE       CACHE BOOL   "" FORCE)
+    set(SQLite3_INCLUDE_DIRS "${_sqlite_dir}" CACHE PATH   "" FORCE)
+    set(SQLite3_LIBRARIES    sqlite3    CACHE STRING "" FORCE)
+    set(SQLite3_VERSION      "3.47.2"   CACHE STRING "" FORCE)
+  else()
+    message(STATUS "[sim-behavior] sqlite3: vendored amalgamation not found, "
+                   "falling back to system sqlite3")
+  endif()
+  unset(_sqlite_dir)
+endif()
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  5. BehaviorTree.CPP v4                                                 ║
 # ║                                                                          ║
 # ║  zip 打包来源：                                                          ║
 # ║    https://github.com/BehaviorTree/BehaviorTree.CPP/archive/refs/tags/4.9.0.zip ║
@@ -256,7 +285,7 @@ if(NOT TARGET behaviortree_cpp AND NOT TARGET BT::behaviortree_cpp)
   # without any dylib-to-dylib symbol collision.
   _dep_add(behaviortree_cpp BehaviorTree.CPP
     https://github.com/BehaviorTree/BehaviorTree.CPP.git 4.9.0
-    "BTCPP_GROOT_INTERFACE=OFF" "BTCPP_SQLITE_LOGGING=OFF"
+    "BTCPP_GROOT_INTERFACE=OFF" "BTCPP_SQLITE_LOGGING=ON"
     "BTCPP_UNIT_TESTS=OFF" "BTCPP_BUILD_TOOLS=OFF"
     "BTCPP_EXAMPLES=OFF"   "BUILD_TESTING=OFF"
     "BTCPP_SHARED_LIBS=OFF"
@@ -284,7 +313,7 @@ message(STATUS "[sim-behavior] BT::behaviortree_cpp ready")
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  5. GoogleTest  (仅测试构建)                                             ║
+# ║  6. GoogleTest  (仅测试构建)                                             ║
 # ║                                                                          ║
 # ║  zip 打包来源：                                                          ║
 # ║    https://github.com/google/googletest/archive/refs/tags/v1.16.0.zip   ║

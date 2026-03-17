@@ -759,7 +759,7 @@ CMake 最低版本：**3.24** | C++ 标准：**C++17**
 - [x] 多 arena 优先级验证（`ArenaIsolationTest` — high arena 不被 low arena 阻塞）
 - [x] 实体分组批量 tick（`kSkipIdle` 策略 — 跳过非 RUNNING 树）
 - [x] 每帧 tick 耗时采样（`IBtRuntime::TickStats` + `LastTickStats()`）
-- [x] `TraceLogger` 接口（`EnableSqliteLogger()` — 需 `BTCPP_SQLITE_LOGGING=ON` 启用）
+- [x] `TraceLogger` 接口（`EnableSqliteLogger()` — SQLite3 vendored，默认启用）
 
 ---
 
@@ -1365,14 +1365,9 @@ TbbJobExecutor executor(ArenaConfig{
 
 `IBtRuntime::EnableSqliteLogger(db_path)` 为所有已创建的树附加 `BT::SqliteLogger`，将节点状态迁移（IDLE→RUNNING→SUCCESS/FAILURE）写入 SQLite 数据库，可用 Groot2 可视化调试。
 
-**前提条件**：编译时需启用 `BTCPP_SQLITE_LOGGING=ON`（当前默认 OFF，原因见 `cmake/Dependencies.cmake` 注释）：
+**SQLite3 已随项目打包**（`third_party/sqlite3/` — SQLite 3.47.2 amalgamation），`BTCPP_SQLITE_LOGGING=ON` 为默认配置，无需额外安装系统 SQLite3 库，直接 `cmake -B build && cmake --build build` 即可使用。
 
-```bash
-cmake -B build -DBTCPP_SQLITE_LOGGING=ON -DCMAKE_PREFIX_PATH=/opt/homebrew
-cmake --build build
-```
-
-启用后的使用方式：
+使用方式：
 
 ```cpp
 SimHostApp app;
