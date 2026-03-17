@@ -733,28 +733,28 @@ CMake 最低版本：**3.24** | C++ 标准：**C++17**
 
 ## 17. 开发阶段路线图
 
-### Phase 1 — 最小闭环（当前）
+### Phase 1 — 最小闭环 ✅
 
 目标：单实体、单树、一个 CPU 异步节点跑通完整链路。
 
-- [ ] `ComputeAction::OnStart()` 提交 TBB 任务
-- [ ] TBB worker 写入 `ResultMailbox`
-- [ ] uvw `async_handle` 唤醒 BT re-tick
-- [ ] `OnRunning()` 消费结果，返回 `SUCCESS`
-- [ ] `OnHalted()` 取消任务，令牌生效
+- [x] `ComputeAction::OnStart()` 提交 TBB 任务
+- [x] TBB worker 写入 `ResultMailbox`
+- [x] uvw `async_handle` 唤醒 BT re-tick
+- [x] `OnRunning()` 消费结果，返回 `SUCCESS`
+- [x] `OnHalted()` 取消任务，令牌生效
 
-### Phase 2 — 实体级运行时
+### Phase 2 — 实体级运行时 ✅
 
-- [ ] `EntityContext` + `WorldSnapshot` 完整集成
-- [ ] 多实体并行 tick（同一线程，串行）
-- [ ] 编队协调（`GroupContext` 共享）
+- [x] `EntityContext` + `WorldSnapshot` 完整集成
+- [x] 多实体并行 tick（同一线程，串行）
+- [x] 编队协调（`GroupContext` 共享）
 
-### Phase 3 — 总线接入
+### Phase 3 — 总线接入 ✅
 
-- [ ] uvw TCP/UDP `BusAdapter`
-- [ ] `CommandBus` 接仿真宿主
+- [x] uvw UDP `BusAdapter`（`UvwUdpBusAdapter`）
+- [x] `CommandBus` 接仿真宿主（`InProcessCommandBus` 出站转发）
 
-### Phase 4 — 性能治理
+### Phase 4 — 性能治理（当前）
 
 - [ ] 多 arena 优先级验证
 - [ ] 实体分组批量 tick
@@ -1070,3 +1070,220 @@ app.Run();
 - 每次 `EnableTreeDebugLogger` 应在所有树创建完成后统一挂载
 - `.btdb` 文件在进程正常退出时由析构函数 `flush()` 写盘；异常崩溃可能丢失最后一批数据
 - 大规模实体（数百棵树、20Hz 帧率）下 SQLite 写入会成为性能瓶颈，测试环境单实体调试时再开启
+
+---
+
+## 22. Phase 2：编队共享状态（GroupContext）
+
+### 22.1 设计动机
+
+多实体协同作战需要跨实体共享状态：目标位置、规则标志（如 `fire_allowed`）、编队规划 Job ID 等。这些状态既不属于某一个实体的私有 `EntityContext`，也不是全局只读的 `WorldSnapshot`，而是**编队范围内的可写共享状态**，由 `IGroupContext` 承载。
+
+### 22.2 接口设计
+
+```cpp
+// include/sim_bt/domain/group/i_group_context.hpp
+class IGroupContext {
+ public:
+  virtual GroupId Id() const = 0;
+
+  // 成员管理
+  virtual void AddMember(EntityId id) = 0;           // 幂等
+  virtual bool IsMember(EntityId id) const = 0;
+  virtual const std::vector<EntityId>& Members() const = 0;
+
+  // 编队目标位置（BT Tick Domain 读写）
+  virtual void SetObjectivePosition(float x, float y, float z) = 0;
+  virtual void GetObjectivePosition(float& x, float& y, float& z) const = 0;
+
+  // 规则标志（通用 key-value bool，BT Tick Domain 读写）
+  virtual void SetRule(const std::string& key, bool value) = 0;
+  virtual bool GetRule(const std::string& key, bool default_val) const = 0;
+};
+```
+
+`ISyncNodeContext::Group()` 提供对 `IGroupContext` 的可空访问（未加入编队时返回 `nullptr`）：
+
+```cpp
+// include/sim_bt/bt_nodes/i_sync_node_context.hpp
+class ISyncNodeContext {
+ public:
+  virtual IGroupContext*       Group()       = 0;   // nullptr = 未加入编队
+  virtual const IGroupContext* Group() const = 0;
+};
+```
+
+### 22.3 线程安全契约
+
+| 操作 | 允许线程 | 说明 |
+|------|----------|------|
+| `Group()->SetObjectivePosition()` | 仅 BT Tick Domain | 不加锁，设计只允许单线程写 |
+| `Group()->GetRule()` | 仅 BT Tick Domain | 同上 |
+| `sync_ctx->SetGroupContext()` | 仅 BT Tick Domain | 由 `SimHostApp` 在 TickAll 间隙调用 |
+| `IBusAdapter::Subscribe()` | 任意线程 | 内部有 mutex 保护 |
+
+`GroupContext` 本身**不加锁**——线程安全由"只在 BT Tick Domain 访问"的约定保证，与 `EntityContext` 相同。
+
+### 22.4 SimHostApp 编队生命周期
+
+```
+SimHostApp::AssignGroup(group_id, {entity_a, entity_b})
+  ├─ 创建 GroupContextImpl（工厂函数 CreateGroupContext(group_id)）
+  ├─ 对每个成员：group_ctx->AddMember(entity_id)
+  └─ 对每个成员：sync_ctx->SetGroupContext(group_ctx)  ← 注入同一实例
+
+SimHostApp::DisbandGroup(group_id)
+  ├─ 对每个成员：sync_ctx->SetGroupContext(nullptr)    ← 清除引用
+  └─ 从 group_bundles_ 移除记录
+```
+
+`AssignGroup` 之后，所有成员的 `SyncNodeContextImpl` 持有**同一个** `GroupContextImpl` 实例，任意成员写入对其他成员立即可见（无延迟，因为是同一帧 BT Tick Domain 内串行执行）。
+
+### 22.5 BT 节点中访问 GroupContext
+
+```cpp
+// 典型 ConditionBase 用法
+class FireAllowedCondition : public ConditionBase {
+ protected:
+  bool Check() override {
+    const IGroupContext* g = Ctx().Group();
+    if (!g) return false;                       // 未加入编队，默认不允许
+    return g->GetRule("fire_allowed", false);
+  }
+};
+```
+
+`Ctx()` 返回 `ISyncNodeContext&`，`Group()` 可空，调用方必须先判 `nullptr`。
+
+### 22.6 simbehavior_sim_host 静态库
+
+为使集成测试能链接 `SimHostApp` 而不拉入 `main()`，`sim_host_app.cpp` 被提取为独立静态库：
+
+```cmake
+# src/sim_host/CMakeLists.txt
+add_library(simbehavior_sim_host STATIC sim_host_app.cpp)
+target_link_libraries(simbehavior_sim_host
+  PUBLIC simbehavior_bt_nodes simbehavior_bt_runtime simbehavior_async_runtime
+         simbehavior_compute_runtime simbehavior_domain simbehavior_adapters)
+
+add_executable(sim_host main.cpp)
+target_link_libraries(sim_host PRIVATE simbehavior_sim_host)
+```
+
+测试目标链接 `simbehavior_sim_host` 而非 `sim_host` 可执行，可直接构造 `SimHostApp`、调用 `AssignGroup`/`DisbandGroup` 等。
+
+---
+
+## 23. Phase 3：总线适配器（IBusAdapter / UvwUdpBusAdapter）
+
+### 23.1 IBusAdapter 接口
+
+```cpp
+// include/sim_bt/runtime/async_runtime/i_bus_adapter.hpp
+class IBusAdapter {
+ public:
+  virtual SimStatus Connect()    = 0;
+  virtual void      Disconnect() = 0;
+  virtual bool      IsConnected() const = 0;
+
+  // 线程安全：可在任意线程调用
+  virtual SimStatus Subscribe(const std::string& topic,
+                               BusMessageCallback callback) = 0;
+  virtual void      Unsubscribe(const std::string& topic) = 0;
+
+  // 必须从 uvw loop 线程调用（通过 PostToLoop 投递）
+  virtual SimStatus Publish(const BusMessage& message) = 0;
+};
+
+struct BusMessage {
+  std::string          topic;
+  uint64_t             timestamp_ms = 0;
+  std::vector<uint8_t> payload;
+};
+```
+
+**线程安全约定**（强制）：
+
+| 方法 | 允许调用线程 | 原因 |
+|------|-------------|------|
+| `Connect()` | uvw loop 线程 | 创建 libuv 资源，必须在 loop 上 |
+| `Disconnect()` | uvw loop 线程 | 关闭 libuv handle |
+| `Publish()` | uvw loop 线程 | `uvw::udp_handle::send()` 不是线程安全的 |
+| `Subscribe()` | 任意线程 | 内部用 `mutex` 保护 handlers map |
+| `Unsubscribe()` | 任意线程 | 同上 |
+
+### 23.2 UDP 帧格式
+
+`UvwUdpBusAdapter` 使用固定的二进制帧格式（小端序）：
+
+```
+┌──────────┬──────────┬──────────────┬──────────────┬─────────────┬─────────────────┐
+│ magic    │ topic_len│ topic        │ timestamp_ms │ payload_len │ payload         │
+│ 4 bytes  │ 2 bytes  │ topic_len B  │ 8 bytes LE   │ 4 bytes LE  │ payload_len B   │
+│ "BUS!"   │ LE       │              │              │             │                 │
+└──────────┴──────────┴──────────────┴──────────────┴─────────────┴─────────────────┘
+magic = 0x42 0x55 0x53 0x21  ("BUS!" little-endian 0x42555321)
+```
+
+收到非法 magic 或截断帧时静默丢弃，不抛出异常。
+
+### 23.3 UvwUdpBusAdapter 使用模式
+
+```cpp
+// 典型初始化（在 uvw loop 线程内通过 PostToLoop 执行）
+auto adapter = std::make_shared<UvwUdpBusAdapter>(
+    event_loop.Loop(),
+    0,               // local_port = 0：让 OS 分配随机端口
+    "127.0.0.1",     // remote_host
+    9000             // remote_port
+);
+
+event_loop.PostToLoop([adapter]() {
+    adapter->Connect();
+});
+
+// Subscribe 可在任意线程调用
+adapter->Subscribe("enemy.spotted", [](const BusMessage& msg) {
+    // 在 uvw loop 线程回调
+    process_payload(msg.payload);
+});
+
+// Publish 必须通过 PostToLoop
+event_loop.PostToLoop([adapter, msg]() {
+    adapter->Publish(msg);
+});
+```
+
+UDP 回环自测（`local_port=0`，发送给自己）：
+
+```cpp
+auto bound_port = adapter->BoundPort();   // Connect() 后读取实际端口
+adapter->SetRemote("127.0.0.1", bound_port);  // 发给自己
+```
+
+### 23.4 CommandBus → BusAdapter 出站转发
+
+`InProcessCommandBus` 可选地绑定一个 `IBusAdapter` + `IEventLoopRuntime`，每次 `Dispatch()` 本地路由完成后，将 `ActionCommand` 序列化为 `BusMessage` 转发出去：
+
+```
+ActionCommand {
+  source_entity, command_type, payload, issued_at_ms
+}
+  ↓ 序列化
+BusMessage {
+  topic    = command_type
+  timestamp_ms = issued_at_ms
+  payload  = [4B source_entity LE][8B issued_at_ms LE][original payload...]
+}
+  ↓ event_loop_->PostToLoop(...)
+  ↓ adapter_->Publish(msg)  ← 在 uvw loop 线程执行
+```
+
+设置方式：
+
+```cpp
+// 在 SimHostApp::Initialize() 后调用（需要 adapter 已 Connect）
+command_bus->SetBusAdapter(bus_adapter, event_loop_runtime);
+```
+
+`SetBusAdapter()` 内部持有 `mutex`，可在任意线程调用；但实际发布的 `Publish()` 始终在 uvw loop 线程执行，符合线程安全契约。

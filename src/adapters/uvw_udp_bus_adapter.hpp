@@ -221,7 +221,6 @@ class UvwUdpBusAdapter : public IBusAdapter {
     BusMessage msg;
     if (!Deserialize(data, length, msg)) {
       return;  // malformed frame, ignored
-      return;
     }
     // 查找 handler（持锁拷贝，避免回调期间死锁）
     BusMessageCallback cb;
