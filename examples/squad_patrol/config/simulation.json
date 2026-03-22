@@ -1,0 +1,42 @@
+{
+  "_comment": "Squad Patrol 仿真配置文件",
+  "_comment2": "修改此文件后重新运行 squad_patrol_example 即可生效，无需重编译",
+
+  "simulation": {
+    "name": "Alpha Squad Patrol — 城郊侦查任务",
+    "duration_frames": 60,
+    "tick_policy": "tick_all",
+    "_tick_policy_comment": "可选: skip_idle（跳过空闲树，推荐大规模场景）或 tick_all"
+  },
+
+  "squad": {
+    "id": 1001,
+    "name": "Alpha Squad",
+    "objective": { "x": 500.0, "y": 0.0, "z": 300.0 },
+    "rally_point": { "x": 200.0, "y": 0.0, "z": 150.0 },
+    "members": [
+      { "id": 101, "name": "Alpha-1 (队长)",   "zone": "north" },
+      { "id": 102, "name": "Alpha-2",           "zone": "south" },
+      { "id": 103, "name": "Alpha-3",           "zone": "east"  },
+      { "id": 104, "name": "Alpha-4",           "zone": "west"  },
+      { "id": 105, "name": "Alpha-5 (后卫)",   "zone": "center" }
+    ]
+  },
+
+  "behavior": {
+    "tree_file": "trees/squad_tree.xml",
+    "_tree_file_comment": "相对于可执行文件目录的路径",
+
+    "scan_duration_ms": 200,
+    "_scan_duration_comment": "每次区域扫描的模拟耗时（TBB worker 睡眠时长）",
+
+    "patrol_step_ms": 300,
+    "_patrol_step_comment": "每次巡逻移动的模拟耗时",
+
+    "report_duration_ms": 100,
+    "_report_duration_comment": "上报威胁后等待指挥部确认的模拟时延",
+
+    "threat_probability_pct": 30,
+    "_threat_comment": "每次扫描发现威胁的概率（0~100），调高可观察到更多报告流程"
+  }
+}

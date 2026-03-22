@@ -1,0 +1,77 @@
+<!--
+  Squad Patrol 行为树定义
+  格式：BehaviorTree.CPP v4
+
+  树 ID：SoldierPatrolTree
+  注意：树 ID 不能与任何已注册节点类型名称相同。
+
+  逻辑说明：
+  每帧按以下优先级执行（Fallback = 从左到右依次尝试，第一个成功则停止）：
+
+    Branch A（优先）: 已探测到威胁
+      - ThreatDetectedCondition  检查 EntityContext "threat_detected" 标志
+      - ReportThreatAction       异步：向指挥部上报 + 通过 CommandBus 发送命令
+
+    Branch B（兜底）: 正常巡逻循环
+      - ScanZoneAction           异步：扫描巡逻区域，随机检测威胁
+      - PatrolMoveAction         异步：移动到下一个巡逻路点
+
+  典型执行路径：
+    第 1 帧 ─ ScanZoneAction 开始 (RUNNING)
+    第 N 帧 ─ TBB 任务完成 → uvw wakeup → re-tick
+              若无威胁: PatrolMoveAction 开始 (RUNNING)
+              若有威胁: threat_detected=true, 本轮 SUCCESS
+    第 N+1 帧: ThreatDetectedCondition=true → ReportThreatAction 开始
+    第 M 帧: 上报完成，threat_detected 清除 → 重回 Branch B
+-->
+<root BTCPP_format="4">
+  <BehaviorTree ID="SoldierPatrolTree">
+    <Fallback name="soldier_decision">
+
+      <!-- ══ Branch A: 上报已发现的威胁 ══════════════════════════════════ -->
+      <Sequence name="threat_response">
+        <!--
+          ThreatDetectedCondition
+          同步条件节点：检查 EntityContext["threat_detected"] 标志。
+          由 ScanZoneAction 在 OnRunning 中扫描到威胁后设置为 true。
+          由 ReportThreatAction 在上报完成后清除为 false。
+        -->
+        <ThreatDetectedCondition/>
+
+        <!--
+          ReportThreatAction
+          异步动作节点：
+            1. OnStart: 通过 CommandBus 立即派发 "threat_report" 命令
+            2. OnStart: 提交 TBB 任务模拟等待指挥部确认（通信延迟）
+            3. OnRunning: 收到确认 → 清除 threat_detected 标志 → SUCCESS
+        -->
+        <ReportThreatAction/>
+      </Sequence>
+
+      <!-- ══ Branch B: 正常巡逻循环 ══════════════════════════════════════ -->
+      <Sequence name="patrol_cycle">
+        <!--
+          ScanZoneAction
+          异步动作节点：
+            1. OnStart: 提交 TBB 任务模拟传感器扫描（耗时操作）
+            2. OnRunning: 扫描完成后解析结果
+               - 若发现威胁: 设置 EntityContext["threat_detected"] = true
+                             设置 GroupContext["squad_alert"] = true（通知编队）
+               - 若区域安全: 继续执行 PatrolMoveAction
+            返回 SUCCESS 时 Sequence 继续执行 PatrolMoveAction。
+        -->
+        <ScanZoneAction/>
+
+        <!--
+          PatrolMoveAction
+          异步动作节点：
+            1. OnStart: 提交 TBB 任务模拟移动计算
+            2. OnRunning: 移动完成 → 更新 EntityContext["patrol_step"] 计数
+            树完成后回到 Fallback 顶部，开始下一帧的决策循环。
+        -->
+        <PatrolMoveAction/>
+      </Sequence>
+
+    </Fallback>
+  </BehaviorTree>
+</root>

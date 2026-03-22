@@ -20,3 +20,18 @@ set_target_properties(sqlite3 PROPERTIES
 if(NOT TARGET SQLite::SQLite3)
   add_library(SQLite::SQLite3 ALIAS sqlite3)
 endif()
+
+# BehaviorTree.CPP 将 sqlite3 以 PUBLIC 方式链接，因此它的
+# install(EXPORT behaviortree_cppTargets ...) 会要求 sqlite3 也在
+# 某个 export set 中。这里添加最小 install 规则以通过 CMake 验证。
+# 实际项目无需安装 sqlite3，但必须存在该规则否则 cmake Generate 报错。
+include(GNUInstallDirs)
+install(TARGETS sqlite3
+  EXPORT sqlite3Targets
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+)
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/sqlite3.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sqlite3ext.h"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)

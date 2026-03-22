@@ -17,6 +17,7 @@ ConditionBase::ConditionBase(const std::string& name,
 }
 
 BT::NodeStatus ConditionBase::tick() {
+  if (!ctx_) return BT::NodeStatus::FAILURE;
   return Check() ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 

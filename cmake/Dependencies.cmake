@@ -304,6 +304,23 @@ if(NOT TARGET BT::behaviortree_cpp)
 endif()
 message(STATUS "[sim-behavior] BT::behaviortree_cpp ready")
 
+# BT.CPP 将 sqlite3 以 PUBLIC 方式链接，导致 install(EXPORT ...) 要求 sqlite3
+# 也在某个 export set 中。behaviortree_cpp 为静态库，sqlite3 符号已内嵌于 .a
+# 文件，下游消费者无需再单独链接 sqlite3，因此从 INTERFACE_LINK_LIBRARIES 中
+# 移除 sqlite3 和 SQLite::SQLite3，以通过 CMake export 验证。
+foreach(_btcpp_tgt behaviortree_cpp)
+  if(TARGET "${_btcpp_tgt}")
+    get_target_property(_btcpp_iface "${_btcpp_tgt}" INTERFACE_LINK_LIBRARIES)
+    if(_btcpp_iface)
+      list(REMOVE_ITEM _btcpp_iface sqlite3 SQLite::SQLite3)
+      set_target_properties("${_btcpp_tgt}" PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${_btcpp_iface}")
+    endif()
+  endif()
+endforeach()
+unset(_btcpp_tgt)
+unset(_btcpp_iface)
+
 # BT.CPP bundles tinyxml2 (v11) and corekit also bundles tinyxml2 (v10).
 # Both dylibs export the same mangled tinyxml2 symbols, causing an ODR
 # conflict that corrupts XML parsing at runtime.  Fix: compile BT.CPP's

@@ -14,6 +14,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── linb::any 类型比较修复 ─────────────────────────────────────────────────────
+# macOS + -fvisibility=hidden 下，std::type_info::operator== 对 hidden visibility
+# 的弱符号（weak private external）可能返回 false，即使 &a == &b 且名称相同。
+# ANY_IMPL_FAST_TYPE_INFO_COMPARE 将比较改为地址比较（&a == &b），完全绕过该问题。
+# 全局定义确保 BT.CPP 内部的 linb::any 与我们所有 TU 使用同一语义。
+add_compile_definitions(ANY_IMPL_FAST_TYPE_INFO_COMPARE)
+
 # ── 全局最低诊断（三方库也可以接受）────────────────────────────────────────
 if(MSVC)
   add_compile_options(
@@ -58,7 +65,12 @@ else()
     -Werror
     -Wno-unused-parameter         # BT 节点经常有未使用参数
     -fvisibility=hidden           # 隐藏非 API 符号（仅本模块生效，不污染三方库）
-    -fvisibility-inlines-hidden
+    # 注意：故意不加 -fvisibility-inlines-hidden。
+    # 该标志使所有内联模板函数（包括 linb::any 的 vtable_for_type<T>()）获得
+    # hidden visibility，导致链接器无法跨 TU 去重其内部静态局部变量。
+    # 结果：BT::Blackboard 在一个 TU（bt_runtime_impl）存入 SyncNodeContextPtr，
+    # 在另一个 TU（condition_base/async_action_base）取出时，linb::any 的类型比较
+    # 因 vtable 副本不同而失败，上下文始终为 null，所有条件节点返回 FAILURE。
   )
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(simbehavior_compile_warnings INTERFACE

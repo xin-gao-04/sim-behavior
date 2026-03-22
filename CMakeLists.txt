@@ -5,6 +5,7 @@ project(sim_behavior VERSION 0.1.0 LANGUAGES CXX)
 option(SIMBEHAVIOR_BUILD_TESTS     "Build unit tests"         ON)
 option(SIMBEHAVIOR_BUILD_TOOLS     "Build developer tools"    ON)
 option(SIMBEHAVIOR_BUILD_SIM_HOST  "Build sim_host executable" ON)
+option(SIMBEHAVIOR_BUILD_EXAMPLES  "Build example projects"   OFF)
 
 # ── 编译标志 ──────────────────────────────────────────────────────────────────
 include(cmake/CompilerFlags.cmake)
@@ -52,4 +53,9 @@ endif()
 if(SIMBEHAVIOR_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# 示例项目
+if(SIMBEHAVIOR_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()
