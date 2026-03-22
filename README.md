@@ -131,7 +131,7 @@ sim-behavior/
 │   ├── adapters/                 InProcessCommandBus, UvwUdpBusAdapter
 │   ├── bt_nodes/                 AsyncActionBase 实现
 │   └── sim_host/                 SimHostApp（含 MemoryPoolStats()）+ main.cpp
-├── tests/                        GoogleTest 测试套件（50 项，全绿）
+├── tests/                        GoogleTest 测试套件（61 项，全绿）
 │   ├── test_cancellation_token.cpp
 │   ├── test_result_mailbox.cpp
 │   ├── test_entity_context.cpp
@@ -229,7 +229,7 @@ printf("pool alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
 | Phase 2 | 多实体、GroupContext、WorldSnapshot 完整集成 | ✅ 完成 |
 | Phase 3 | uvw UDP BusAdapter、仿真宿主总线接入 | ✅ 完成 |
 | Phase 4 | 性能治理：arena 隔离验证、kSkipIdle、TickStats、TraceLogger、内存池 | ✅ 完成（50/50 tests pass） |
-| Phase 5 | 性能优化：Lock-Free Tick、Active Set、Wakeup 去重、DrainAll 批量化、端到端测试 | 📋 规划中（TODO 已嵌入源码） |
+| Phase 5 | 性能优化：Lock-Free Tick、Active Set、Wakeup 去重、DrainAll 批量化、端到端测试 | ✅ 完成（61/61 tests pass） |
 
 ---
 
@@ -237,6 +237,6 @@ printf("pool alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
 
 | 平台 | 编译器 | 状态 |
 |------|--------|------|
-| macOS 14 (ARM64) | AppleClang 17 | ✅ 50/50 tests pass |
+| macOS 14 (ARM64) | AppleClang 17 | ✅ 61/61 tests pass |
 | Ubuntu 22.04 | GCC 13 | 🏗 待验证 |
 | Windows Server 2022 | MSVC 2022 | 🏗 待验证 |
