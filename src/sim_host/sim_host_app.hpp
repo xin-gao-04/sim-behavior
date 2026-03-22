@@ -80,6 +80,18 @@ class SimHostApp {
   // 返回上一帧 TickAll 的性能统计（须在 BT Tick Domain 中读取）。
   IBtRuntime::TickStats LastTickStats() const;
 
+  // 返回进程级内存池当前统计（alloc_count/bytes_in_use/bytes_peak 等）。
+  // 可在任意帧读取，线程安全。
+  struct MemPoolStats {
+    uint64_t alloc_count  = 0;
+    uint64_t free_count   = 0;
+    uint64_t bytes_in_use = 0;
+    uint64_t bytes_peak   = 0;
+    uint64_t slab_hits    = 0;
+    uint64_t slab_misses  = 0;
+  };
+  MemPoolStats MemoryPoolStats() const;
+
   // ── 获取各运行时（供外部注册节点等使用） ─────────────────────────────────
 
   IBtRuntime&              BtRuntime()        { return *bt_runtime_; }

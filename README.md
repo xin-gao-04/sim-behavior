@@ -41,9 +41,12 @@
 | [libuv](https://github.com/libuv/libuv) | v1.48.0 | `uv::uv` | zip vendor → `add_subdirectory` |
 | [uvw](https://github.com/skypjack/uvw) | v3.4.0_libuv_v1.48 | `uvw::uvw` | zip vendor → header-only |
 | [BehaviorTree.CPP](https://github.com/BehaviorTree/BehaviorTree.CPP) | 4.9.0 | `BT::behaviortree_cpp` | zip vendor → `add_subdirectory` |
+| [SQLite3](https://www.sqlite.org/) | 3.47.2 | `SQLite::SQLite3` | amalgamation vendor → `add_subdirectory` |
 | [GoogleTest](https://github.com/google/googletest) | v1.16.0 | `GTest::gtest` | zip vendor → `add_subdirectory` |
 
 **CMake 最低版本：3.24 | C++ 标准：C++17**
+
+> SQLite3 amalgamation（`third_party/sqlite3/`）已随仓库打包，`BTCPP_SQLITE_LOGGING=ON` 为默认配置，`EnableSqliteLogger()` 开箱即用，无需额外安装系统 SQLite3。
 
 ---
 
@@ -51,7 +54,7 @@
 
 ### 方式一：内网 / 离线（推荐，零依赖网络）
 
-仓库已包含所有依赖的 `.zip` 源码包（`third_party/*.zip`），cmake 配置时自动解压，无需任何网络访问。
+仓库已包含所有依赖的 `.zip` 源码包（`third_party/*.zip`）及 SQLite3 amalgamation，cmake 配置时自动解压，无需任何网络访问。
 
 ```bash
 # 1. 克隆仓库并初始化 corekit 子模块
@@ -114,26 +117,30 @@ sim-behavior/
 │   └── Dependencies.cmake        三级依赖引入（目录 → zip → FetchContent）
 ├── include/sim_bt/               公开接口（纯虚类，无实现细节）
 │   ├── common/                   types.hpp, result.hpp
-│   ├── runtime/bt_runtime/       IBtRuntime, ITreeInstance
+│   ├── runtime/bt_runtime/       IBtRuntime（含 TickStats / TickPolicy / EnableSqliteLogger）
 │   ├── runtime/async_runtime/    IEventLoopRuntime, IWakeupBridge, IBusAdapter
 │   ├── runtime/compute_runtime/  IJobExecutor, IJobHandle, IResultMailbox, ICancellationToken
 │   ├── domain/                   IEntityContext, IGroupContext, IWorldSnapshot
 │   ├── adapters/                 ICommandBus
 │   └── bt_nodes/                 AsyncActionBase, IAsyncActionContext
 ├── src/                          具体实现（不对外暴露）
-│   ├── runtime/compute_runtime/  TbbJobExecutor, DefaultResultMailbox
+│   ├── runtime/compute_runtime/  TbbJobExecutor（corekit SystemPool 分配 JobHandle）
 │   ├── runtime/async_runtime/    UvwEventLoopRuntime, UvwWakeupBridge
 │   ├── runtime/bt_runtime/       BtRuntimeImpl, AsyncActionContextImpl
 │   ├── domain/                   EntityContextImpl, GroupContextImpl, WorldSnapshotImpl
-│   ├── adapters/                 InProcessCommandBus
+│   ├── adapters/                 InProcessCommandBus, UvwUdpBusAdapter
 │   ├── bt_nodes/                 AsyncActionBase 实现
-│   └── sim_host/                 SimHostApp + main.cpp（进程入口）
-├── tests/                        GoogleTest 测试套件
-│   ├── test_cancellation_token.cpp          # ICancellationToken 单元测试
-│   ├── test_result_mailbox.cpp              # IResultMailbox 单元测试
-│   ├── test_entity_context.cpp              # IEntityContext 单元测试
-│   ├── test_async_action_base.cpp           # AsyncActionBase 单元测试
-│   └── test_cross_library_integration.cpp  # 跨库边界集成测试（TBB↔Mailbox↔uvw）
+│   └── sim_host/                 SimHostApp（含 MemoryPoolStats()）+ main.cpp
+├── tests/                        GoogleTest 测试套件（50 项，全绿）
+│   ├── test_cancellation_token.cpp
+│   ├── test_result_mailbox.cpp
+│   ├── test_entity_context.cpp
+│   ├── test_async_action_base.cpp
+│   ├── test_cross_library_integration.cpp  # TBB↔Mailbox↔uvw 跨库边界
+│   ├── test_multi_entity.cpp               # Phase 2：多实体隔离
+│   ├── test_group_context.cpp              # Phase 2：编队共享状态
+│   ├── test_bus_adapter.cpp                # Phase 3：UDP BusAdapter
+│   └── test_phase4_perf.cpp               # Phase 4：arena 隔离 + TickStats + kSkipIdle
 ├── scripts/
 │   └── vendor-deps.sh            联网机器一键下载所有 zip 依赖
 ├── docs/design/
@@ -141,6 +148,7 @@ sim-behavior/
 │   └── behaviorTree+onetbb+uvw.md 原始设计文档
 └── third_party/
     ├── corekit/                  git submodule（必须克隆）
+    ├── sqlite3/                  ← SQLite 3.47.2 amalgamation（已入库，无需安装）
     ├── oneTBB.zip                ← 已入库，cmake 自动解压
     ├── libuv.zip
     ├── uvw.zip
@@ -201,16 +209,26 @@ class ComputeAction : public sim_bt::AsyncActionBase {
 };
 ```
 
+### 内存池统计（Phase 4）
+
+`TbbJobExecutor::Submit()` 使用 corekit `SystemPool` 分配 `TbbJobHandle` / `CancellationToken`，减少高频 job 提交对系统堆的碎片化压力。可通过 `SimHostApp::MemoryPoolStats()` 读取：
+
+```cpp
+auto stats = app.MemoryPoolStats();
+printf("pool alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
+       stats.alloc_count, stats.bytes_in_use, stats.bytes_peak, stats.slab_hits);
+```
+
 ---
 
 ## 路线图
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| Phase 1 | 最小闭环：单实体、TBB 任务 → uvw wakeup → re-tick | ✅ 完成（29/29 tests pass） |
-| Phase 2 | 多实体、WorldSnapshot 完整集成、端到端结果消费 | 🏗 进行中 |
-| Phase 3 | uvw TCP/UDP BusAdapter、仿真宿主总线接入 | ⏳ |
-| Phase 4 | 性能治理：多 arena 优先级验证、批量 tick、TraceLogger | ⏳ |
+| Phase 1 | 最小闭环：单实体、TBB 任务 → uvw wakeup → re-tick | ✅ 完成 |
+| Phase 2 | 多实体、GroupContext、WorldSnapshot 完整集成 | ✅ 完成 |
+| Phase 3 | uvw UDP BusAdapter、仿真宿主总线接入 | ✅ 完成 |
+| Phase 4 | 性能治理：arena 隔离验证、kSkipIdle、TickStats、TraceLogger、内存池 | ✅ 完成（50/50 tests pass） |
 
 ---
 
@@ -218,6 +236,6 @@ class ComputeAction : public sim_bt::AsyncActionBase {
 
 | 平台 | 编译器 | 状态 |
 |------|--------|------|
-| macOS 14 (ARM64) | AppleClang 17 | ✅ 29/29 tests pass |
+| macOS 14 (ARM64) | AppleClang 17 | ✅ 50/50 tests pass |
 | Ubuntu 22.04 | GCC 13 | 🏗 待验证 |
 | Windows Server 2022 | MSVC 2022 | 🏗 待验证 |

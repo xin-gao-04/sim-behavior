@@ -11,6 +11,7 @@
 #include "../runtime/bt_runtime/sync_node_context_impl.hpp"
 #include "../domain/entity/entity_context_impl.hpp"
 #include "sim_bt/common/sim_bt_log.hpp"
+#include "corekit/memory/system_pool.hpp"
 
 // WorldSnapshot 具体实现（从 world_snapshot_impl.cpp 中定义）
 // 通过前向声明使用 SimpleWorldSnapshotProvider 工厂函数
@@ -35,6 +36,19 @@ SimHostApp::~SimHostApp() {
 
 SimStatus SimHostApp::Initialize() {
   SIMBT_LOG_INFO("SimHostApp: initializing");
+
+  // ── 进程级内存池（corekit SystemPool）──────────────────────────────────────
+  // 在所有运行时创建前配置，TbbJobExecutor::Submit 会从此池分配 TbbJobHandle。
+  {
+    corekit::memory::PoolConfig pool_cfg;
+    pool_cfg.name             = "sim_behavior";
+    pool_cfg.block_size       = 256 * 1024;  // 256KB / block
+    pool_cfg.max_cached_blocks = 16;
+    pool_cfg.thread_safe      = true;
+    // Configure() 只在首次调用时生效；若测试套件多次构造 SimHostApp 则忽略后续调用。
+    corekit::memory::SystemPool::Configure(pool_cfg);
+  }
+
   // ── 创建各运行时 ──────────────────────────────────────────────────────────
 
   // Compute Runtime
@@ -203,6 +217,12 @@ void SimHostApp::SetTickPolicy(IBtRuntime::TickPolicy policy) {
 
 IBtRuntime::TickStats SimHostApp::LastTickStats() const {
   return bt_runtime_->LastTickStats();
+}
+
+SimHostApp::MemPoolStats SimHostApp::MemoryPoolStats() const {
+  auto s = corekit::memory::SystemPool::CurrentStats();
+  return {s.alloc_count, s.free_count, s.bytes_in_use,
+          s.bytes_peak, s.slab_hits, s.slab_misses};
 }
 
 void SimHostApp::Run() {

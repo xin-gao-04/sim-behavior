@@ -4,6 +4,7 @@
 
 #include "tbb_job_handle.hpp"
 #include "sim_bt/common/sim_bt_log.hpp"
+#include "corekit/memory/system_pool.hpp"
 
 namespace sim_bt {
 
@@ -40,8 +41,19 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
   }
 
   uint64_t job_id = next_job_id_.fetch_add(1, std::memory_order_relaxed);
-  auto token = std::make_shared<DefaultCancellationToken>();
-  auto handle = std::make_shared<TbbJobHandle>(job_id, token);
+
+  // 使用 corekit SystemPool 分配 TbbJobHandle 与 CancellationToken，
+  // 减少高频 job 提交对系统堆的碎片化压力。
+  // 自定义 deleter 确保对象在引用计数归零时归还到同一内存池。
+  corekit::memory::IMemoryPool* pool = corekit::memory::SystemPool::Instance();
+
+  auto* raw_token = COREKIT_POOL_NEW(pool, DefaultCancellationToken);
+  CancellationTokenPtr token(raw_token,
+      [pool](DefaultCancellationToken* p) { COREKIT_POOL_DELETE(pool, p); });
+
+  auto* raw_handle = COREKIT_POOL_NEW(pool, TbbJobHandle, job_id, token);
+  auto handle = std::shared_ptr<TbbJobHandle>(raw_handle,
+      [pool](TbbJobHandle* p) { COREKIT_POOL_DELETE(pool, p); });
 
   pending_count_.fetch_add(1, std::memory_order_relaxed);
 
