@@ -12,8 +12,8 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sim_bt/common/sim_bt_log.hpp"
@@ -43,9 +43,6 @@ class BtTreeInstance : public ITreeInstance {
 
   void Reset() override {
     tree_.haltTree();
-    // clear() is deprecated in BTCPP 4.7+; use Backup/Restore pattern:
-    // backup the original empty state before first tick, restore it here.
-    // For a simple reset, just halt — blackboard state is owned by the caller.
   }
 
   bool HasRunningNodes() const override {
@@ -55,18 +52,15 @@ class BtTreeInstance : public ITreeInstance {
   // 暴露内部 BT::Tree 引用（仅供 BtRuntimeImpl 使用，如 SqliteLogger 附加）。
   BT::Tree& GetBtTree() { return tree_; }
 
-  // ┌── Phase 5 TODO [P0] 方案 A — destroyed 标记 ────────────────────────────┐
-  // │ 新增 std::atomic<bool> destroyed_{false};                                │
-  // │ 新增 bool IsDestroyed() const { return destroyed_.load(acquire); }       │
-  // │ 新增 void MarkDestroyed() { destroyed_.store(true, release); }           │
-  // │ DestroyTree() 中先 MarkDestroyed() 再 Halt()，                          │
-  // │ TickAll 锁外 Tick 前检查 IsDestroyed()，跳过已销毁的树。               │
-  // │ 这是方案 A（锁外 Tick）的安全保障。                                     │
-  // └─────────────────────────────────────────────────────────────────────────────┘
+  // 方案 A — destroyed 标记：DestroyTree 先 MarkDestroyed，再从 map 移除。
+  // Phase 2 在锁外 Tick 前检查此标记，防止对已 Halt 的树重复 Tick。
+  void MarkDestroyed() { destroyed_.store(true, std::memory_order_release); }
+  bool IsDestroyed()  const { return destroyed_.load(std::memory_order_acquire); }
 
  private:
   EntityId owner_;
   BT::Tree tree_;
+  std::atomic<bool> destroyed_{false};
 };
 
 // ── BtRuntimeImpl ─────────────────────────────────────────────────────────────
@@ -96,11 +90,12 @@ class BtRuntimeImpl : public IBtRuntime {
       if (kv.second) kv.second->Halt();
     }
     trees_.clear();
+    active_set_.clear();
+    wakeup_set_.clear();
   }
 
   SimStatus LoadTreeFromXml(const std::string& xml) override {
     try {
-      // BTCPP 4.7+: loadFromText renamed to registerBehaviorTreeFromText
       factory_.registerBehaviorTreeFromText(xml);
       return SimStatus::Ok();
     } catch (const std::exception& ex) {
@@ -110,7 +105,6 @@ class BtRuntimeImpl : public IBtRuntime {
 
   SimStatus LoadTreeFromFile(const std::string& path) override {
     try {
-      // BTCPP 4.7+: loadFromFile renamed to registerBehaviorTreeFromFile
       factory_.registerBehaviorTreeFromFile(path);
       return SimStatus::Ok();
     } catch (const std::exception& ex) {
@@ -124,9 +118,6 @@ class BtRuntimeImpl : public IBtRuntime {
       AsyncActionContextPtr async_ctx = nullptr,
       SyncNodeContextPtr    sync_ctx  = nullptr) override {
     try {
-      // 为每棵树创建私有 Blackboard，并将 per-entity 上下文注入其中。
-      // 节点在构造时（或首次 tick 前）从 Blackboard 读取 ctx，
-      // 无需在 registerBuilder 里逐节点捕获实体特定数据。
       auto blackboard = BT::Blackboard::create();
       if (async_ctx) {
         blackboard->set<AsyncActionContextPtr>(kBlackboardKeyAsyncCtx, async_ctx);
@@ -140,11 +131,9 @@ class BtRuntimeImpl : public IBtRuntime {
       {
         std::lock_guard<std::mutex> lock(mu_);
         trees_[entity_id] = inst;
+        // 方案 B：新建树加入 active_set_，确保首帧被 Tick
+        active_set_.insert(entity_id);
       }
-      // ┌── Phase 5 TODO [P1] 方案 B ────────────────────────────────────────┐
-      // │ 新树创建后加入 active_set_：active_set_.insert(entity_id);        │
-      // │ 新树首帧必须被 Tick，不能被 skip。                                │
-      // └───────────────────────────────────────────────────────────────────┘
       SIMBT_LOG_INFO_S("BtRuntime: created tree \"" << tree_name
           << "\" for entity=" << entity_id
           << " async_ctx=" << (async_ctx ? "yes" : "no")
@@ -156,16 +145,19 @@ class BtRuntimeImpl : public IBtRuntime {
     }
   }
 
-  // ┌── Phase 5 TODO [P0/P1] 方案 A+B ────────────────────────────────────────┐
-  // │ 方案 A：在 erase 前调用 it->second->MarkDestroyed() 防止锁外 Tick。     │
-  // │ 方案 B：同时从 active_set_ 中移除 entity_id。                           │
-  // └─────────────────────────────────────────────────────────────────────────────┘
   void DestroyTree(EntityId entity_id) override {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = trees_.find(entity_id);
     if (it != trees_.end()) {
-      if (it->second) it->second->Halt();
+      // 方案 A：先标记 destroyed，再 Halt，防止锁外 Tick 读到已释放的树
+      if (it->second) {
+        it->second->MarkDestroyed();
+        it->second->Halt();
+      }
       trees_.erase(it);
+      // 方案 B：从 active_set_ 移除
+      active_set_.erase(entity_id);
+      wakeup_set_.erase(entity_id);
     }
   }
 
@@ -178,71 +170,98 @@ class BtRuntimeImpl : public IBtRuntime {
   void TickAll(SimTimeMs sim_time_ms) override {
     auto t0 = std::chrono::steady_clock::now();
 
-    // Phase 1：处理 wakeup 队列，确保外部请求在本帧生效
-    // ┌── Phase 5 TODO [P0] 方案 C ──────────────────────────────────────────┐
-    // │ 将 std::queue → std::unordered_set 后，此处改为：                     │
-    // │   std::unordered_set<EntityId> wakeups;                               │
-    // │   { lock(mu_); std::swap(wakeups, wakeup_set_); }                    │
-    // │   for (EntityId id : wakeups) TickEntityLocked(id);                   │
-    // │ 自动去重，避免同一实体一帧内被 Tick 多次。                            │
-    // └───────────────────────────────────────────────────────────────────────┘
-    // ┌── Phase 5 TODO [P0] 方案 A ──────────────────────────────────────────┐
-    // │ Phase 1 的 TickEntityLocked 当前在 mu_ 内执行 Tick()。               │
-    // │ 优化后改为：                                                          │
-    // │   1. 锁内只做查找：根据 wakeup id 从 trees_ 取 shared_ptr 到 local   │
-    // │   2. 释放 mu_                                                         │
-    // │   3. 遍历 local，逐棵 Tick()（需检查 destroyed_ 标记）               │
-    // └───────────────────────────────────────────────────────────────────────┘
-    std::queue<EntityId> wakeups;
+    // ── Phase 1：处理 wakeup 队列 ────────────────────────────────────────────
+    // 方案 C：wakeup_set_ 天然去重，同一实体多次 RequestWakeup 只 Tick 一次。
+    // 方案 A：锁内只做 swap + 指针收集，锁外执行 Tick()。
+    std::unordered_set<EntityId> wakeups;
+    std::vector<std::shared_ptr<BtTreeInstance>> phase1_trees;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      std::swap(wakeups, wakeup_queue_);
+      std::swap(wakeups, wakeup_set_);
+      phase1_trees.reserve(wakeups.size());
+      for (EntityId id : wakeups) {
+        auto it = trees_.find(id);
+        if (it != trees_.end() && it->second) {
+          phase1_trees.push_back(it->second);
+        }
+      }
     }
+
     const size_t wakeup_count = wakeups.size();
     if (wakeup_count > 0) {
       SIMBT_LOG_INFO_S("BtRuntime: tick_all sim_time=" << sim_time_ms
           << "ms trees=" << trees_.size()
           << " wakeups=" << wakeup_count);
     }
-    while (!wakeups.empty()) {
-      EntityId id = wakeups.front();
-      wakeups.pop();
-      TickEntityLocked(id);
-    }
 
-    // Phase 2：逐实体 tick（kSkipIdle 策略下跳过根节点非 RUNNING 的树）
-    // ┌── Phase 5 TODO [P1] 方案 B ──────────────────────────────────────────┐
-    // │ 引入 active_set_ 后，Phase 2 改为：                                   │
-    // │   std::vector<std::shared_ptr<BtTreeInstance>> snapshot;               │
-    // │   { lock(mu_);                                                        │
-    // │     for (EntityId eid : active_set_) {                                │
-    // │       auto it = trees_.find(eid);                                     │
-    // │       if (it != trees_.end()) snapshot.push_back(it->second);         │
-    // │     }                                                                 │
-    // │   } // unlock                                                         │
-    // │   for (auto& tree : snapshot) {                                       │
-    // │     if (tree->IsDestroyed()) { ++skipped; continue; }                 │
-    // │     auto st = tree->Tick();                                           │
-    // │     if (st != NodeStatus::kRunning) {                                 │
-    // │       lock(mu_); active_set_.erase(tree->OwnerEntity());              │
-    // │     }                                                                 │
-    // │     ++ticked;                                                         │
-    // │   }                                                                   │
-    // │ 这同时实现了方案 A（锁外 Tick）和方案 B（仅遍历活跃集合）。         │
-    // └───────────────────────────────────────────────────────────────────────┘
-    size_t ticked = 0, skipped = 0;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      for (auto& kv : trees_) {
-        if (tick_policy_ == TickPolicy::kSkipIdle &&
-            !kv.second->HasRunningNodes()) {
-          ++skipped;
-          continue;
+    // 锁外执行 Phase 1 Tick（方案 A）
+    for (auto& tree : phase1_trees) {
+      if (tree->IsDestroyed()) continue;
+      auto status = tree->Tick();
+      // Phase 1 wakeup Tick 后，根据结果更新 active_set_（方案 B）
+      EntityId eid = tree->OwnerEntity();
+      if (status != NodeStatus::kRunning) {
+        std::lock_guard<std::mutex> lock(mu_);
+        // 仅当实体仍在 trees_ 中且未被新 wakeup 时移出 active_set_
+        // 注意：RequestWakeup 可能在此期间再次将其加入 active_set_
+        // unordered_set::erase 是幂等的，所以直接 erase 安全
+        if (trees_.count(eid) && !wakeup_set_.count(eid)) {
+          active_set_.erase(eid);
         }
-        kv.second->Tick();
-        ++ticked;
       }
     }
+
+    // ── Phase 2：遍历活跃集合 Tick ───────────────────────────────────────────
+    // 方案 B + A：锁内 snapshot active_set_ 对应的 tree 指针，锁外 Tick。
+    // kTickAll：遍历所有 trees_（保持原语义）。
+    // kSkipIdle：只遍历 active_set_（仅 RUNNING 树）。
+    std::vector<std::shared_ptr<BtTreeInstance>> phase2_trees;
+    size_t total_trees = 0;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      total_trees = trees_.size();
+      if (tick_policy_ == TickPolicy::kSkipIdle) {
+        // 只遍历 active_set_
+        phase2_trees.reserve(active_set_.size());
+        for (EntityId eid : active_set_) {
+          auto it = trees_.find(eid);
+          if (it != trees_.end() && it->second) {
+            phase2_trees.push_back(it->second);
+          }
+        }
+      } else {
+        // kTickAll：遍历所有树
+        phase2_trees.reserve(trees_.size());
+        for (auto& kv : trees_) {
+          if (kv.second) phase2_trees.push_back(kv.second);
+        }
+      }
+    }
+
+    size_t ticked = 0;
+    // 已在 Phase 1 wakeup 中被 Tick 的实体，Phase 2 跳过（避免同帧双 Tick）
+    for (auto& tree : phase2_trees) {
+      if (tree->IsDestroyed()) continue;
+      // Phase 1 已处理的 wakeup 实体在本帧跳过
+      if (wakeups.count(tree->OwnerEntity())) continue;
+
+      auto status = tree->Tick();
+      ++ticked;
+
+      // 方案 B：Tick 完成后，非 RUNNING 树从 active_set_ 移除
+      if (status != NodeStatus::kRunning) {
+        EntityId eid = tree->OwnerEntity();
+        std::lock_guard<std::mutex> lock(mu_);
+        if (trees_.count(eid) && !wakeup_set_.count(eid)) {
+          active_set_.erase(eid);
+        }
+      }
+    }
+
+    // 统计 skipped_count：kSkipIdle 下 = 总树数 - 本帧实际 ticked（不含 Phase 1）
+    const size_t skipped = (tick_policy_ == TickPolicy::kSkipIdle)
+                           ? (total_trees > ticked ? total_trees - ticked : 0)
+                           : 0;
 
     // 记录本帧统计
     auto dur_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -255,17 +274,40 @@ class BtRuntimeImpl : public IBtRuntime {
   }
 
   void TickEntity(EntityId entity_id) override {
-    TickEntityLocked(entity_id);
+    // 方案 A：锁内取指针，锁外执行 Tick
+    std::shared_ptr<BtTreeInstance> tree_ptr;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto it = trees_.find(entity_id);
+      if (it != trees_.end()) tree_ptr = it->second;
+    }
+    if (tree_ptr && !tree_ptr->IsDestroyed()) {
+      auto status = tree_ptr->Tick();
+      if (status != NodeStatus::kRunning) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (trees_.count(entity_id) && !wakeup_set_.count(entity_id)) {
+          active_set_.erase(entity_id);
+        }
+      }
+    }
   }
 
-  // ┌── Phase 5 TODO [P0] 方案 C — wakeup 去重 ──────────────────────────────┐
-  // │ 改为 wakeup_set_.insert(entity_id)，自动去重。                         │
-  // │ 同时在 [P1] 方案 B 下需 active_set_.insert(entity_id) 标记活跃。      │
-  // └───────────────────────────────────────────────────────────────────────────┘
   void RequestWakeup(EntityId entity_id) override {
     SIMBT_LOG_INFO_S("BtRuntime: wakeup requested entity=" << entity_id);
     std::lock_guard<std::mutex> lock(mu_);
-    wakeup_queue_.push(entity_id);
+    // 方案 C：set insert 自动去重，O(1)
+    wakeup_set_.insert(entity_id);
+    // 方案 B：唤醒的实体加入 active_set_
+    active_set_.insert(entity_id);
+  }
+
+  void RequestWakeupBatch(const std::vector<EntityId>& ids) override {
+    // 一次加锁批量 insert，避免 N 次单独 RequestWakeup 的 N 次锁竞争
+    std::lock_guard<std::mutex> lock(mu_);
+    for (EntityId id : ids) {
+      wakeup_set_.insert(id);
+      active_set_.insert(id);
+    }
   }
 
   size_t ActiveTreeCount() const override {
@@ -309,23 +351,17 @@ class BtRuntimeImpl : public IBtRuntime {
 #endif
   }
 
-  // 向工厂注册节点（供外部调用）
-  BT::BehaviorTreeFactory& Factory() { return factory_; }
-
  private:
-  void TickEntityLocked(EntityId entity_id) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = trees_.find(entity_id);
-    if (it != trees_.end() && it->second) {
-      it->second->Tick();
-    }
-  }
-
   BT::BehaviorTreeFactory factory_;
 
   mutable std::mutex mu_;
   std::unordered_map<EntityId, std::shared_ptr<BtTreeInstance>> trees_;
-  std::queue<EntityId> wakeup_queue_;
+
+  // 方案 C：wakeup 去重 — unordered_set 替代 queue，insert 自动幂等
+  std::unordered_set<EntityId> wakeup_set_;
+
+  // 方案 B：Active Set — 只记录根节点 RUNNING 或等待首帧 Tick 的实体
+  std::unordered_set<EntityId> active_set_;
 
   bool initialized_ = false;
 
@@ -333,41 +369,6 @@ class BtRuntimeImpl : public IBtRuntime {
   TickPolicy tick_policy_   = TickPolicy::kTickAll;
   TickStats  last_tick_stats_;
 
-  // ┌─────────────────────────────────────────────────────────────────────────┐
-  // │  Phase 5 TODO — 性能深度优化（数据结构重构）                            │
-  // │                                                                         │
-  // │  [P0] 方案 C — wakeup 去重                                              │
-  // │  将 wakeup_queue_ 从 std::queue<EntityId> 改为                          │
-  // │  std::unordered_set<EntityId> wakeup_set_。                             │
-  // │  RequestWakeup() 使用 insert（自动去重），                               │
-  // │  TickAll Phase 1 消费时 swap 到 local set 后遍历。                      │
-  // │  改动极小，避免同一实体一帧内被多次 Tick。                               │
-  // │                                                                         │
-  // │  [P1] 方案 B — Active Set                                               │
-  // │  新增 active_set_: std::unordered_set<EntityId>                         │
-  // │  Phase 2 只遍历 active_set_ 而非全部 trees_。                           │
-  // │  维护规则：                                                              │
-  // │    - Tick() 返回 RUNNING → 加入 active_set_                             │
-  // │    - Tick() 返回 SUCCESS/FAILURE → 从 active_set_ 移除                  │
-  // │    - RequestWakeup(eid) → 无条件加入 active_set_                        │
-  // │    - CreateTree(eid) → 加入 active_set_（新树首帧必须 tick）             │
-  // │    - DestroyTree(eid) → 从 active_set_ 移除                             │
-  // │  收益：200 棵树 10 棵 active → Phase 2 遍历从 200 降至 10。             │
-  // │                                                                         │
-  // │  [P0] 方案 A — TickAll 锁粒度优化                                       │
-  // │  Phase 2 当前在 mu_ 锁内执行所有 Tick()，阻塞 RequestWakeup。           │
-  // │  优化方案：                                                              │
-  // │    1. 锁内只做 snapshot：拷贝 active_set_ 对应的                        │
-  // │       vector<shared_ptr<BtTreeInstance>> 到 local_snapshot              │
-  // │    2. 释放 mu_                                                           │
-  // │    3. 遍历 local_snapshot，逐棵 Tick()（锁外执行）                      │
-  // │  注意事项：                                                              │
-  // │    - Tick 期间 DestroyTree 可能被调用 → shared_ptr 保证不释放            │
-  // │    - 但 BT::Tree 在 Halt 后再 Tick 不安全 → BtTreeInstance 新增         │
-  // │      std::atomic<bool> destroyed_ 标记，Tick() 前检查                    │
-  // │    - TickEntityLocked (Phase 1) 同理需要改为锁外执行                    │
-  // │  收益：mu_ 持锁从 O(N×Tick_cost) 降至 O(N×sizeof(shared_ptr))。        │
-  // └─────────────────────────────────────────────────────────────────────────┘
 #ifdef BTCPP_SQLITE_LOGGING
   std::vector<std::unique_ptr<BT::SqliteLogger>> sqlite_loggers_;
 #endif

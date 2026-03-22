@@ -4,6 +4,7 @@
 #include <optional>
 #include <queue>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "sim_bt/common/types.hpp"
 #include "sim_bt/runtime/compute_runtime/i_result_mailbox.hpp"
@@ -45,6 +46,9 @@ class DefaultResultMailbox : public IResultMailbox {
 
   // 已 drain 但尚未被 BT 节点 Consume 的结果（按 job_id 检索）
   std::unordered_map<uint64_t, JobResult> ready_;
+
+  // 方案 Discard 修复：已丢弃的 job_id 集合，DrainAll 时跳过，防止幽灵结果
+  std::unordered_set<uint64_t> discarded_ids_;
 
   VoidCallback notify_cb_;
 };

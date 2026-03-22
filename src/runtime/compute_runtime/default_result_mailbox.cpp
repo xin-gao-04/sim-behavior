@@ -1,6 +1,7 @@
 #include "default_result_mailbox.hpp"
 
 #include <functional>
+#include <vector>
 
 #include "sim_bt/common/sim_bt_log.hpp"
 
@@ -21,37 +22,47 @@ void DefaultResultMailbox::Post(JobResult result) {
   }
 }
 
-// ┌── Phase 5 TODO [P1] 方案 D — DrainAll 批量化 ─────────────────────────────┐
-// │  当前实现对每条 result 单独加锁写 ready_（N 条 → N 次 mu_ 加锁）。        │
-// │  优化方案：                                                                │
-// │    1. 锁内 swap incoming_ → local（已有，1 次锁）                         │
-// │    2. 锁外遍历 local，收集到 vector<pair<uint64_t, JobResult>> batch      │
-// │    3. 一次性加锁，batch insert 到 ready_（1 次锁，N 次 insert）           │
-// │    4. 锁外遍历 batch 执行 consumer 回调                                   │
-// │  总计：2 次加锁（swap + batch insert），替代当前 N+1 次。                  │
-// │  consumer 回调中调用 RequestWakeup → 也是 N 次 BtRuntimeImpl::mu_ 加锁，  │
-// │  后续可考虑 RequestWakeupBatch(vector<EntityId>) 一次性入队。              │
-// └────────────────────────────────────────────────────────────────────────────────┘
+// 方案 D — DrainAll 批量化：N+1 次加锁 → 2 次加锁
+//
+// 流程：
+//   Step 1: { lock } swap incoming_ → local（1 次锁，最小化 incoming_ 持锁时间）
+//   Step 2: 锁外遍历 local，过滤 discarded_ids_，收集有效 batch
+//   Step 3: { lock } batch insert 到 ready_（1 次锁，N 次 insert）
+//   Step 4: 锁外执行 consumer 回调（通常触发 RequestWakeup）
+//
+// 总计：2 次加锁，替代原有 N+1 次。
 void DefaultResultMailbox::DrainAll(
     const std::function<void(JobResult)>& consumer) {
-  // 仅在 uvw loop 线程调用，将 incoming_ 移入 ready_ 并逐条回调
+  // Step 1：原子交换，最小化 incoming_ 持锁时间
   std::queue<JobResult> local;
   {
     std::lock_guard<std::mutex> lock(mu_);
     std::swap(local, incoming_);
   }
-  if (!local.empty()) {
-    SIMBT_LOG_INFO_S("ResultMailbox: drain " << local.size() << " result(s)");
-  }
-  while (!local.empty()) {
-    JobResult r = std::move(local.front());
-    local.pop();
-    uint64_t id = r.job_id;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      ready_[id] = r;  // 存入 ready_ 供后续 Peek
+  if (local.empty()) return;
+
+  SIMBT_LOG_INFO_S("ResultMailbox: drain " << local.size() << " result(s)");
+
+  // Step 2：锁外遍历，收集有效结果（跳过已 Discard 的 job_id）
+  std::vector<JobResult> batch;
+  batch.reserve(local.size());
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    while (!local.empty()) {
+      JobResult r = std::move(local.front());
+      local.pop();
+      if (discarded_ids_.count(r.job_id)) continue;  // 幽灵结果：跳过
+      batch.push_back(std::move(r));
     }
-    if (consumer) {
+    // Step 3：一次加锁，批量写入 ready_
+    for (const auto& r : batch) {
+      ready_[r.job_id] = r;
+    }
+  }
+
+  // Step 4：锁外执行 consumer 回调
+  if (consumer) {
+    for (const auto& r : batch) {
       consumer(r);
     }
   }
@@ -67,22 +78,15 @@ std::optional<JobResult> DefaultResultMailbox::Peek(uint64_t job_id) const {
 void DefaultResultMailbox::Consume(uint64_t job_id) {
   std::lock_guard<std::mutex> lock(mu_);
   ready_.erase(job_id);
+  discarded_ids_.erase(job_id);  // 同步清理 discard 集合
 }
 
-// ┌── Phase 5 TODO [P1] — Discard 精确取消 ────────────────────────────────────┐
-// │  当前 Discard 只从 ready_ 移除，incoming_ 中残留的同 job_id 结果            │
-// │  会在下次 DrainAll 时被移入 ready_，导致"幽灵结果"。                       │
-// │  修复方案：                                                                │
-// │    新增 discarded_ids_: std::unordered_set<uint64_t>                       │
-// │    Discard() 时同时 discarded_ids_.insert(job_id)                         │
-// │    DrainAll() 在移入 ready_ 前检查 discarded_ids_，跳过已丢弃的。         │
-// │    Consume() 时也从 discarded_ids_ 中移除对应 id。                        │
-// └────────────────────────────────────────────────────────────────────────────────┘
+// Discard 精确取消：同时标记 discarded_ids_，防止幽灵结果
+// 若 job 已在 incoming_ 中但尚未 DrainAll，DrainAll 时会跳过该 job_id。
 void DefaultResultMailbox::Discard(uint64_t job_id) {
   std::lock_guard<std::mutex> lock(mu_);
   ready_.erase(job_id);
-  // incoming_ 中可能还有此 job 的结果，标记为无效（简单丢弃策略）
-  // 如需精确取消 incoming_ 中的条目，可改用 deque + 标志位
+  discarded_ids_.insert(job_id);  // 标记：即使从 incoming_ drain 出来也不写入 ready_
 }
 
 }  // namespace sim_bt
