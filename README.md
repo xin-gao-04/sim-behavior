@@ -1,12 +1,14 @@
 # sim-behavior
 
-通用行为树后端模块。
+高性能多实体行为树运行时后端。
 
-基于 **BehaviorTree.CPP v4 + oneTBB + uvw** 三层执行模型，
-实现高性能、可维护的多实体行为树运行时。
+基于 **BehaviorTree.CPP v4 + oneTBB + uvw** 三层执行模型，提供：
+- **Lock-Free Tick** — TBB 回调不阻塞主线程 Tick
+- **Active Set** — kSkipIdle 模式仅遍历活跃实体，空闲树零开销
+- **Wakeup 去重** — 同帧多次唤醒自动合并，消除冗余 Tick
+- **DrainAll 批量化** — N+1 次锁降至 2 次锁，回调在锁外执行
 
-> **所有依赖均从源码编译，zip 离线 vendor，不依赖系统安装包。**
-> 克隆仓库后无需网络，直接 `cmake + make` 即可在内网机器上完整构建。
+> **离线构建**：所有依赖 zip vendor，克隆即可 `cmake + make`，无需网络。
 
 ---
 
@@ -16,11 +18,11 @@
 ┌──────────────────────────────────────────────────────────┐
 │  Layer 1 — Simulation Host                               │  进程入口 / 配置 / 装配
 ├──────────────────────────────────────────────────────────┤
-│  Layer 2 — Behavior Runtime   (BehaviorTree.CPP)         │  树工厂 / Tick 调度 / wakeup 队列
+│  Layer 2 — Behavior Runtime   (BehaviorTree.CPP)         │  树工厂 / Tick 调度 / Active Set
 ├──────────────────────────────────────────────────────────┤
 │  Layer 3 — Async Orchestration (uvw / libuv)             │  事件循环 / timer / 跨线程唤醒
 ├──────────────────────────────────────────────────────────┤
-│  Layer 4 — Compute Execution  (oneTBB task_arena)        │  high/normal/low 3 个 arena / 结果邮箱
+│  Layer 4 — Compute Execution  (oneTBB task_arena)        │  high/normal/low 3 arena / 结果邮箱
 ├──────────────────────────────────────────────────────────┤
 │  Layer 5 — Domain State                                  │  实体 / 编队 / 世界状态
 ├──────────────────────────────────────────────────────────┤
@@ -32,68 +34,53 @@
 
 ---
 
-## 依赖版本
-
-| 依赖 | 版本 | CMake 目标 | 引入方式 |
-|------|------|-----------|---------|
-| [corekit](https://github.com/xin-gao-04/corekit) | main | `corekit` | **git submodule（必须）** |
-| [oneTBB](https://github.com/oneapi-src/oneTBB) | v2022.0.0 | `TBB::tbb` | zip vendor → `add_subdirectory` |
-| [libuv](https://github.com/libuv/libuv) | v1.48.0 | `uv::uv` | zip vendor → `add_subdirectory` |
-| [uvw](https://github.com/skypjack/uvw) | v3.4.0_libuv_v1.48 | `uvw::uvw` | zip vendor → header-only |
-| [BehaviorTree.CPP](https://github.com/BehaviorTree/BehaviorTree.CPP) | 4.9.0 | `BT::behaviortree_cpp` | zip vendor → `add_subdirectory` |
-| [SQLite3](https://www.sqlite.org/) | 3.47.2 | `SQLite::SQLite3` | amalgamation vendor → `add_subdirectory` |
-| [GoogleTest](https://github.com/google/googletest) | v1.16.0 | `GTest::gtest` | zip vendor → `add_subdirectory` |
-
-**CMake 最低版本：3.24 | C++ 标准：C++17**
-
-> SQLite3 amalgamation（`third_party/sqlite3/`）已随仓库打包，`BTCPP_SQLITE_LOGGING=ON` 为默认配置，`EnableSqliteLogger()` 开箱即用，无需额外安装系统 SQLite3。
-
----
-
 ## 快速开始
 
-### 方式一：内网 / 离线（推荐，零依赖网络）
-
-仓库已包含所有依赖的 `.zip` 源码包（`third_party/*.zip`）及 SQLite3 amalgamation，cmake 配置时自动解压，无需任何网络访问。
-
 ```bash
-# 1. 克隆仓库并初始化 corekit 子模块
-git clone https://github.com/xin-gao-04/sim-behavior.git
-cd sim-behavior
-git submodule update --init --recursive   # 拉取 corekit
-
-# 2. 构建（依赖从 zip 自动解压，全程不需网络）
-cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j$(nproc)
-
-# 3. 运行测试
-./build/tests/sim_behavior_tests
-```
-
-### 方式二：在线环境（zip 不存在时自动 FetchContent）
-
-```bash
+# 1. 克隆 & 初始化子模块
 git clone https://github.com/xin-gao-04/sim-behavior.git
 cd sim-behavior
 git submodule update --init --recursive
 
+# 2. 构建（依赖从 zip 自动解压，全程离线）
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j$(nproc)
+
+# 3. 运行测试（61 项，全绿）
 ./build/tests/sim_behavior_tests
 ```
 
-> cmake/Dependencies.cmake 依次尝试：
+> **依赖解析策略**（`cmake/Dependencies.cmake`）：
 > 1. `third_party/<dep>/CMakeLists.txt` → 直接 `add_subdirectory`
 > 2. `third_party/<dep>.zip` → 自动解压后 `add_subdirectory`
-> 3. FetchContent → 在线下载（需要网络）
+> 3. FetchContent → 在线下载（仅当前两者不存在时）
 
-### 重新下载 zip 包（在联网机器上更新 vendor）
+<details>
+<summary>更新 vendor zip（联网机器）</summary>
 
 ```bash
 bash scripts/vendor-deps.sh
 git add third_party/*.zip
 git commit -m "vendor: update third-party zips"
 ```
+
+</details>
+
+---
+
+## 依赖版本
+
+| 依赖 | 版本 | CMake 目标 | 引入方式 |
+|------|------|-----------|---------|
+| [corekit](https://github.com/xin-gao-04/corekit) | main | `corekit` | git submodule |
+| [oneTBB](https://github.com/oneapi-src/oneTBB) | v2022.0.0 | `TBB::tbb` | zip vendor |
+| [libuv](https://github.com/libuv/libuv) | v1.48.0 | `uv::uv` | zip vendor |
+| [uvw](https://github.com/skypjack/uvw) | v3.4.0_libuv_v1.48 | `uvw::uvw` | zip vendor (header-only) |
+| [BehaviorTree.CPP](https://github.com/BehaviorTree/BehaviorTree.CPP) | 4.9.0 | `BT::behaviortree_cpp` | zip vendor |
+| [SQLite3](https://www.sqlite.org/) | 3.47.2 | `SQLite::SQLite3` | amalgamation vendor |
+| [GoogleTest](https://github.com/google/googletest) | v1.16.0 | `GTest::gtest` | zip vendor |
+
+**CMake ≥ 3.24 | C++17**
 
 ---
 
@@ -113,43 +100,45 @@ git commit -m "vendor: update third-party zips"
 sim-behavior/
 ├── CMakeLists.txt
 ├── cmake/
-│   ├── CompilerFlags.cmake       跨平台编译标志（MSVC / GCC / Clang）
-│   └── Dependencies.cmake        三级依赖引入（目录 → zip → FetchContent）
-├── include/sim_bt/               公开接口（纯虚类，无实现细节）
-│   ├── common/                   types.hpp, result.hpp
-│   ├── runtime/bt_runtime/       IBtRuntime（含 TickStats / TickPolicy / EnableSqliteLogger）
-│   ├── runtime/async_runtime/    IEventLoopRuntime, IWakeupBridge, IBusAdapter
-│   ├── runtime/compute_runtime/  IJobExecutor, IJobHandle, IResultMailbox, ICancellationToken
-│   ├── domain/                   IEntityContext, IGroupContext, IWorldSnapshot
-│   ├── adapters/                 ICommandBus
-│   └── bt_nodes/                 AsyncActionBase, IAsyncActionContext
-├── src/                          具体实现（不对外暴露）
-│   ├── runtime/compute_runtime/  TbbJobExecutor（corekit SystemPool 分配 JobHandle）
-│   ├── runtime/async_runtime/    UvwEventLoopRuntime, UvwWakeupBridge
-│   ├── runtime/bt_runtime/       BtRuntimeImpl, AsyncActionContextImpl
-│   ├── domain/                   EntityContextImpl, GroupContextImpl, WorldSnapshotImpl
-│   ├── adapters/                 InProcessCommandBus, UvwUdpBusAdapter
-│   ├── bt_nodes/                 AsyncActionBase 实现
-│   └── sim_host/                 SimHostApp（含 MemoryPoolStats()）+ main.cpp
-├── tests/                        GoogleTest 测试套件（61 项，全绿）
+│   ├── CompilerFlags.cmake          跨平台编译标志（MSVC / GCC / Clang）
+│   └── Dependencies.cmake           三级依赖引入（目录 → zip → FetchContent）
+├── include/sim_bt/                  公开接口（纯虚类，无实现细节）
+│   ├── common/                      types.hpp, result.hpp
+│   ├── runtime/bt_runtime/          IBtRuntime（TickStats / TickPolicy / SqliteLogger）
+│   ├── runtime/async_runtime/       IEventLoopRuntime, IWakeupBridge, IBusAdapter
+│   ├── runtime/compute_runtime/     IJobExecutor, IJobHandle, IResultMailbox
+│   ├── domain/                      IEntityContext, IGroupContext, IWorldSnapshot
+│   ├── adapters/                    ICommandBus
+│   └── bt_nodes/                    AsyncActionBase, IAsyncActionContext
+├── src/                             具体实现（不对外暴露）
+│   ├── runtime/compute_runtime/     TbbJobExecutor（SystemPool 内存池分配）
+│   ├── runtime/async_runtime/       UvwEventLoopRuntime, UvwWakeupBridge
+│   ├── runtime/bt_runtime/          BtRuntimeImpl（Lock-Free Tick / Active Set）
+│   ├── domain/                      EntityContextImpl, GroupContextImpl
+│   ├── adapters/                    InProcessCommandBus, UvwUdpBusAdapter
+│   ├── bt_nodes/                    AsyncActionBase 实现
+│   └── sim_host/                    SimHostApp + main.cpp
+├── tests/                           GoogleTest 测试套件（61 项）
 │   ├── test_cancellation_token.cpp
 │   ├── test_result_mailbox.cpp
 │   ├── test_entity_context.cpp
 │   ├── test_async_action_base.cpp
-│   ├── test_cross_library_integration.cpp  # TBB↔Mailbox↔uvw 跨库边界
-│   ├── test_multi_entity.cpp               # Phase 2：多实体隔离
-│   ├── test_group_context.cpp              # Phase 2：编队共享状态
-│   ├── test_bus_adapter.cpp                # Phase 3：UDP BusAdapter
-│   └── test_phase4_perf.cpp               # Phase 4：arena 隔离 + TickStats + kSkipIdle
+│   ├── test_cross_library_integration.cpp   TBB↔Mailbox↔uvw 跨库边界
+│   ├── test_multi_entity.cpp                多实体隔离 + 编队
+│   ├── test_group_context.cpp               GroupContext 共享状态
+│   ├── test_bus_adapter.cpp                 UDP BusAdapter
+│   ├── test_phase4_perf.cpp                 arena 隔离 + TickStats + kSkipIdle
+│   ├── test_phase5_perf.cpp                 Lock-Free / ActiveSet / DrainAll 验证
+│   └── test_e2e_async_action.cpp            端到端异步 Action 集成测试
+├── docs/
+│   ├── design/architecture.md       六层架构详细设计（含 Mermaid 图）
+│   └── html/                        生成文档
 ├── scripts/
-│   └── vendor-deps.sh            联网机器一键下载所有 zip 依赖
-├── docs/design/
-│   ├── architecture.md           六层架构详细设计（含 Mermaid 图）
-│   └── behaviorTree+onetbb+uvw.md 原始设计文档
+│   └── vendor-deps.sh               联网机器一键下载所有 zip 依赖
 └── third_party/
-    ├── corekit/                  git submodule（必须克隆）
-    ├── sqlite3/                  ← SQLite 3.47.2 amalgamation（已入库，无需安装）
-    ├── oneTBB.zip                ← 已入库，cmake 自动解压
+    ├── corekit/                     git submodule
+    ├── sqlite3/                     SQLite 3.47.2 amalgamation
+    ├── oneTBB.zip
     ├── libuv.zip
     ├── uvw.zip
     ├── BehaviorTree.CPP.zip
@@ -158,7 +147,7 @@ sim-behavior/
 
 ---
 
-## 开发节点指南（快速参考）
+## 开发节点指南
 
 ### 同步条件节点
 
@@ -181,8 +170,7 @@ class ComputeAction : public sim_bt::AsyncActionBase {
       sim_bt::JobPriority::kNormal,
       [](sim_bt::CancellationTokenPtr tok, sim_bt::JobResult& out) {
         if (tok->IsCancelled()) return;
-        // TBB worker 线程：CPU 密集计算（路径规划、评分等）
-        out.succeeded = true;
+        out.succeeded = true;  // CPU 密集计算（路径规划、评分等）
       }
     )->JobId();
     Ctx().StartTimeout(std::chrono::milliseconds(80));
@@ -209,13 +197,11 @@ class ComputeAction : public sim_bt::AsyncActionBase {
 };
 ```
 
-### 内存池统计（Phase 4）
-
-`TbbJobExecutor::Submit()` 使用 corekit `SystemPool` 分配 `TbbJobHandle` / `CancellationToken`，减少高频 job 提交对系统堆的碎片化压力。可通过 `SimHostApp::MemoryPoolStats()` 读取：
+### 内存池统计
 
 ```cpp
 auto stats = app.MemoryPoolStats();
-printf("pool alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
+printf("alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
        stats.alloc_count, stats.bytes_in_use, stats.bytes_peak, stats.slab_hits);
 ```
 
@@ -228,12 +214,12 @@ printf("pool alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
 | Phase 1 | 最小闭环：单实体、TBB 任务 → uvw wakeup → re-tick | ✅ 完成 |
 | Phase 2 | 多实体、GroupContext、WorldSnapshot 完整集成 | ✅ 完成 |
 | Phase 3 | uvw UDP BusAdapter、仿真宿主总线接入 | ✅ 完成 |
-| Phase 4 | 性能治理：arena 隔离验证、kSkipIdle、TickStats、TraceLogger、内存池 | ✅ 完成（50/50 tests pass） |
-| Phase 5 | 性能优化：Lock-Free Tick、Active Set、Wakeup 去重、DrainAll 批量化、端到端测试 | ✅ 完成（61/61 tests pass） |
+| Phase 4 | 性能治理：arena 隔离、kSkipIdle、TickStats、TraceLogger、内存池 | ✅ 完成 |
+| Phase 5 | 性能优化：Lock-Free Tick、Active Set、Wakeup 去重、DrainAll 批量化 | ✅ 完成 |
 
 ---
 
-## 编译验证（CI 矩阵目标）
+## 编译验证
 
 | 平台 | 编译器 | 状态 |
 |------|--------|------|
