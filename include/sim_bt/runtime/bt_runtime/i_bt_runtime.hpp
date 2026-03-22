@@ -132,6 +132,15 @@ class IBtRuntime {
   // 从任意线程通知特定实体需要 re-tick（线程安全，投递到 tick 前队列）。
   virtual void RequestWakeup(EntityId entity_id) = 0;
 
+  // ┌── Phase 5 TODO [P1] — RequestWakeupBatch ─────────────────────────────────┐
+  // │  新增批量 wakeup 接口，配合方案 D（DrainAll 批量化）使用：                │
+  // │    virtual void RequestWakeupBatch(const std::vector<EntityId>& ids) {    │
+  // │      for (auto id : ids) RequestWakeup(id);  // 默认逐个调用             │
+  // │    }                                                                      │
+  // │  BtRuntimeImpl 覆写为一次加锁批量 insert，减少 N 次 mu_ 加锁到 1 次。   │
+  // │  DrainAll 的 consumer 改为收集 entity_ids 后一次性调用此接口。            │
+  // └───────────────────────────────────────────────────────────────────────────────┘
+
   // ── 统计 ────────────────────────────────────────────────────────────────────
 
   virtual size_t ActiveTreeCount() const = 0;

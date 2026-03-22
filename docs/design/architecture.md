@@ -1385,3 +1385,179 @@ app.Run();
 ```
 
 **注意**：`SqliteLogger` 在后台线程异步写入 SQLite，大规模实体（数百棵树、20Hz）时会成为性能瓶颈，仅在单实体调试场景开启。
+
+---
+
+## 25. Phase 5：性能优化（规划中）
+
+Phase 5 聚焦于多实体规模（200+实体、20Hz）下的性能瓶颈消除。所有优化方案已作为 TODO 注释嵌入源码对应位置，标注优先级和详细实现步骤。
+
+### 25.1 核心瓶颈分析
+
+当前架构在多实体场景下存在三个主要性能瓶颈：
+
+```
+瓶颈 1：BtRuntimeImpl::mu_ 持锁 O(N × Tick_cost)
+────────────────────────────────────────────────────
+  TickAll() 在 Phase 2 遍历所有树并逐棵 Tick() 的全过程中持有 mu_，
+  导致 RequestWakeup() 从其他线程调用时被阻塞。
+  200 棵树 × 200μs/tick = 40ms 阻塞窗口。
+
+瓶颈 2：wakeup_queue_ 无去重
+────────────────────────────────────────────────────
+  同一实体多次 RequestWakeup → queue 中出现 N 条重复 → Phase 1 冗余 Tick N 次。
+  每次冗余 Tick 消耗 100-200μs BT 执行时间。
+
+瓶颈 3：kSkipIdle 仍然 O(N) 遍历
+────────────────────────────────────────────────────
+  即使跳过 idle 树，Phase 2 仍遍历 trees_ 全量 map，
+  对每棵树调用 HasRunningNodes() 判断。
+  200 棵树中只有 20 棵 active，也要检查 200 次。
+```
+
+### 25.2 优化方案总览
+
+| 方案 | 优先级 | 文件 | 核心变更 |
+|------|--------|------|----------|
+| **A — Lock-Free Tick（快照模式）** | P0 | `bt_runtime_impl.cpp` | Phase 2 拷贝 tree 指针到 local vector（锁内），Tick 在锁外执行；BtTreeInstance 加 `destroyed_` 原子标志防悬垂 |
+| **B — Active Set** | P1 | `bt_runtime_impl.cpp` | 新增 `active_set_: unordered_set<EntityId>`，Phase 2 只遍历活跃集合；CreateTree/DestroyTree/Tick 维护集合 |
+| **C — Wakeup 去重** | P0 | `bt_runtime_impl.cpp` | `wakeup_queue_: queue` → `wakeup_set_: unordered_set`，RequestWakeup O(1) 去重 |
+| **D — DrainAll 批量化** | P1 | `default_result_mailbox.cpp` | swap incoming→local（1次锁）+ batch insert ready（1次锁），替代当前 N+1 次加锁 |
+| **E — shared_ptr 控制块优化** | P2 | `tbb_job_executor.cpp` | `allocate_shared` + 池分配器，消除 control block 额外堆分配 |
+| **F — 端到端 & 性能测试** | P1 | `tests/` | 新增 `test_e2e_async_action.cpp` + `test_phase5_perf.cpp` |
+
+### 25.3 方案 A — Lock-Free Tick（快照模式）
+
+**目标**：将 TickAll Phase 2 的持锁时间从 O(N × Tick_cost) 降至 O(N)（仅拷贝指针）。
+
+**实现步骤**：
+
+1. `BtTreeInstance` 新增 `std::atomic<bool> destroyed_{false}` 和 `MarkDestroyed()`/`IsDestroyed()` 方法
+2. `DestroyTree()` 在从 `trees_` 移除前先调用 `tree->MarkDestroyed()`
+3. TickAll Phase 2 改为：
+   ```
+   snapshot = []  // local vector
+   { lock; for (auto& kv : trees_) snapshot.push_back(kv.second); }  // 拷贝 shared_ptr
+   for (auto& tree : snapshot) {
+     if (!tree->IsDestroyed()) tree->Tick();  // 锁外执行
+   }
+   ```
+4. RequestWakeup 不再被 Phase 2 阻塞，延迟从 40ms 降至 <1μs
+
+**源码位置**：`src/runtime/bt_runtime/bt_runtime_impl.cpp` — BtTreeInstance 类、TickAll Phase 2、DestroyTree
+
+### 25.4 方案 B — Active Set
+
+**目标**：Phase 2 遍历量从 O(全部实体) 降至 O(活跃实体)。
+
+**数据结构变更**：
+
+```cpp
+// 新增私有成员
+std::unordered_set<EntityId> active_set_;  // 根节点 RUNNING 的实体集合
+```
+
+**维护规则**：
+- `CreateTree()` → `active_set_.insert(entity_id)`（新建树默认活跃）
+- `DestroyTree()` → `active_set_.erase(entity_id)`
+- `RequestWakeup()` → `active_set_.insert(entity_id)`（被唤醒的实体重新激活）
+- Phase 2 Tick 后检查 `!HasRunningNodes()` → `active_set_.erase(entity_id)`
+
+**kSkipIdle 配合**：Phase 2 直接遍历 `active_set_`，无需检查 `HasRunningNodes()`。
+
+**源码位置**：`src/runtime/bt_runtime/bt_runtime_impl.cpp` — TickAll Phase 2、CreateTree、DestroyTree、RequestWakeup、私有成员区
+
+### 25.5 方案 C — Wakeup 去重
+
+**目标**：消除同一实体被重复 Tick 的问题。
+
+**变更**：`wakeup_queue_: std::queue<EntityId>` → `wakeup_set_: std::unordered_set<EntityId>`
+
+```
+RequestWakeup(id):
+  { lock; wakeup_set_.insert(id); }  // set insert 自动去重，O(1)
+
+TickAll Phase 1:
+  std::unordered_set<EntityId> local;
+  { lock; std::swap(local, wakeup_set_); }  // 原子交换
+  for (auto id : local) { TickEntity(id); }
+```
+
+**源码位置**：`src/runtime/bt_runtime/bt_runtime_impl.cpp` — RequestWakeup、TickAll Phase 1、私有成员区
+
+### 25.6 方案 D — DrainAll 批量化
+
+**目标**：DrainAll 加锁次数从 N+1 降至 2。
+
+**当前问题**：每条 result 单独加锁写 ready_，N 条 result 产生 N+1 次 mu_ 加锁。
+
+**优化后流程**：
+```
+Step 1: { lock; swap(incoming_, local); }           // 1 次锁
+Step 2: 锁外遍历 local，收集 vector<pair<id, result>>
+Step 3: { lock; for batch: ready_[id] = result; }   // 1 次锁
+Step 4: 锁外执行 consumer 回调
+```
+
+**附带修复 — Discard 幽灵结果**：
+- 新增 `discarded_ids_: std::unordered_set<uint64_t>`
+- `Discard()` 时同时 `discarded_ids_.insert(job_id)`
+- DrainAll Step 2 跳过 `discarded_ids_` 中的 job_id
+- `Consume()` 时从 `discarded_ids_` 移除
+
+**源码位置**：`src/runtime/compute_runtime/default_result_mailbox.cpp` — DrainAll、Discard
+
+### 25.7 方案 E — shared_ptr 控制块优化
+
+**目标**：消除 TbbJobExecutor::Submit 中 shared_ptr 的额外 control block 堆分配。
+
+**当前问题**：`COREKIT_POOL_NEW(pool, T)` + `shared_ptr(raw, deleter)` 仍需为 control block 分配一次堆内存。
+
+**优化选项**：
+- a) `std::allocate_shared` + 池分配器：对象和 control block 在同一块池内存
+- b) `intrusive_ptr`：内嵌引用计数，消除 control block（改动面大）
+- c) 等待 corekit 导出 `IObjectPool<T>` 工厂
+
+**优先级**：P2（低），仅在 Submit 频率 >10k/s 时考虑。
+
+**源码位置**：`src/runtime/compute_runtime/tbb_job_executor.cpp` — Submit 方法
+
+### 25.8 方案 F — 测试覆盖
+
+新增两个测试文件：
+
+**test_e2e_async_action.cpp**（端到端异步 action 集成测试）：
+- SimHostApp + 真实 TBB + 真实 uvw + 自定义 AsyncActionBase 子类
+- 验证完整链路：OnStart→SubmitCpuJob→TBB执行→Post→DrainAll→RequestWakeup→Phase1 Tick→OnRunning→PeekResult→ConsumeResult
+- 用例：单实体正常完成、超时竞态、Halt 取消 in-flight job、并发多实体隔离
+
+**test_phase5_perf.cpp**（Phase 5 优化验证测试）：
+- WakeupDedup: 同一实体多次 RequestWakeup → Phase 1 只 Tick 一次
+- ActiveSet: 100 实体 + kSkipIdle，只有 active 子集被 Tick
+- LockFreeTickAll: Phase 2 期间 RequestWakeup 不被阻塞（延迟 < 10μs）
+- MailboxBatchDrain: 50 个 result 批量 drain 只加锁 2 次
+- DiscardGhostResult: Discard 后 DrainAll 不再写入 ready_
+- ScaleTest: 200 实体 × 20Hz × 3 秒持续运行无死锁无泄漏
+
+**源码位置**：`tests/CMakeLists.txt` — 已标注新增文件
+
+### 25.9 接口变更
+
+**IBtRuntime 新增**（`include/sim_bt/runtime/bt_runtime/i_bt_runtime.hpp`）：
+
+```cpp
+// 批量 wakeup 接口，配合 DrainAll 批量化使用
+virtual void RequestWakeupBatch(const std::vector<EntityId>& ids) {
+  for (auto id : ids) RequestWakeup(id);  // 默认逐个调用
+}
+// BtRuntimeImpl 覆写为一次加锁批量 insert，减少 N 次 mu_ 加锁到 1 次
+```
+
+### 25.10 预期性能收益
+
+| 指标 | 优化前 | 优化后（预期） |
+|------|--------|---------------|
+| RequestWakeup 延迟（Phase 2 期间） | 40ms（阻塞等待 TickAll 完成） | <1μs（锁外 Tick） |
+| 200 实体 TickAll 耗时（20 棵活跃） | ~40ms（全量遍历 + 持锁 Tick） | ~4ms（只 Tick 活跃集 + 无锁） |
+| DrainAll 50 条 result 加锁次数 | 51 次 | 2 次 |
+| 同实体 5 次 wakeup 产生的冗余 Tick | 5 次 | 1 次 |

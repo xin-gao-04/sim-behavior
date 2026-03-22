@@ -15,6 +15,30 @@ add_executable(sim_behavior_tests
   test_bus_adapter.cpp
   # Phase 4 性能治理：arena 隔离 + TickStats + kSkipIdle
   test_phase4_perf.cpp
+  # ┌── Phase 5 TODO [P1] 方案 F — 新增测试文件 ────────────────────────────┐
+  # │  下列测试文件需新建，用于覆盖当前盲区：                                │
+  # │                                                                        │
+  # │  test_e2e_async_action.cpp                                             │
+  # │    端到端异步 action 集成测试：                                        │
+  # │    SimHostApp + 真实 TBB + 真实 uvw + 自定义 AsyncActionBase 子类      │
+  # │    验证完整链路：OnStart→SubmitCpuJob→TBB执行→Post→DrainAll            │
+  # │    →RequestWakeup→Phase1 Tick→OnRunning→PeekResult→ConsumeResult       │
+  # │    应包含以下用例：                                                    │
+  # │    - 单实体 job 正常完成，OnRunning 收到 result                        │
+  # │    - 超时与 job 完成的竞态（job 1ms 完成 vs 2ms timeout）              │
+  # │    - Halt 取消 in-flight job，result 到达后不被消费                     │
+  # │    - 并发多实体各自独立完成，结果不串扰                                │
+  # │                                                                        │
+  # │  test_phase5_perf.cpp                                                  │
+  # │    Phase 5 优化验证测试：                                              │
+  # │    - WakeupDedup: 同一实体多次 RequestWakeup → Phase 1 只 Tick 一次    │
+  # │    - ActiveSet: 100 实体 + kSkipIdle，只有 active 子集被 Tick          │
+  # │    - LockFreeTickAll: Phase 2 期间 RequestWakeup 不被阻塞             │
+  # │      （测量 RequestWakeup 延迟 < 10μs，即使 200 棵树在 Tick）         │
+  # │    - MailboxBatchDrain: 50 个 result 批量 drain 只加锁 2 次            │
+  # │    - DiscardGhostResult: Discard 后 DrainAll 不再写入 ready_          │
+  # │    - ScaleTest: 200 实体 × 20Hz × 3 秒持续运行无死锁无泄漏           │
+  # └───────────────────────────────────────────────────────────────────────┘
 )
 
 target_include_directories(sim_behavior_tests

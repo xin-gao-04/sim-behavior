@@ -45,6 +45,16 @@ JobHandlePtr TbbJobExecutor::Submit(JobDescriptor descriptor) {
   // 使用 corekit SystemPool 分配 TbbJobHandle 与 CancellationToken，
   // 减少高频 job 提交对系统堆的碎片化压力。
   // 自定义 deleter 确保对象在引用计数归零时归还到同一内存池。
+  // ┌── Phase 5 TODO [P2] 方案 E — shared_ptr 控制块优化 ─────────────────────┐
+  // │  当前 COREKIT_POOL_NEW + shared_ptr(raw, deleter) 仍需为 control block   │
+  // │  分配一次堆内存。优化选项：                                              │
+  // │  a) std::allocate_shared + 池分配器：对象和 control block 在同一块池内存 │
+  // │  b) intrusive_ptr：TbbJobHandle / DefaultCancellationToken 内嵌           │
+  // │     atomic<int> refcount，消除 control block。需修改接口，改动面大。     │
+  // │  c) IObjectPool<TbbJobHandle>：corekit 未导出工厂，需等 corekit 支持     │
+  // │     corekit_create_object_pool<T>() 后再考虑。                           │
+  // │  优先级低，仅在 Submit 频率 >10k/s 时考虑。                             │
+  // └─────────────────────────────────────────────────────────────────────────────┘
   corekit::memory::IMemoryPool* pool = corekit::memory::SystemPool::Instance();
 
   auto* raw_token = COREKIT_POOL_NEW(pool, DefaultCancellationToken);
