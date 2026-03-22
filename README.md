@@ -48,6 +48,11 @@ cmake --build build -j$(nproc)
 
 # 3. 运行测试（61 项，全绿）
 ./build/tests/sim_behavior_tests
+
+# 4. 运行示例（可选）
+cmake -B build -DSIMBEHAVIOR_BUILD_EXAMPLES=ON
+cmake --build build --target squad_patrol_example
+cd build/examples/squad_patrol && ./squad_patrol_example
 ```
 
 > **依赖解析策略**（`cmake/Dependencies.cmake`）：
@@ -90,6 +95,7 @@ git commit -m "vendor: update third-party zips"
 |------|--------|------|
 | `SIMBEHAVIOR_BUILD_TESTS` | ON | 构建 GoogleTest 单元测试 |
 | `SIMBEHAVIOR_BUILD_SIM_HOST` | ON | 构建 sim_host 可执行文件 |
+| `SIMBEHAVIOR_BUILD_EXAMPLES` | OFF | 构建示例项目（如 squad_patrol） |
 | `SIMBEHAVIOR_ENABLE_ASAN` | OFF | AddressSanitizer（仅 GCC/Clang） |
 
 ---
@@ -118,6 +124,11 @@ sim-behavior/
 │   ├── adapters/                    InProcessCommandBus, UvwUdpBusAdapter
 │   ├── bt_nodes/                    AsyncActionBase 实现
 │   └── sim_host/                    SimHostApp + main.cpp
+├── examples/
+│   └── squad_patrol/                多实体巡逻示例（-DSIMBEHAVIOR_BUILD_EXAMPLES=ON）
+│       ├── src/                     main.cpp + nodes.hpp + config_loader.hpp
+│       ├── trees/squad_tree.xml     BT 行为树定义（可热修改，无需重编译）
+│       └── config/simulation.json  仿真参数配置（时长、扫描时延、威胁概率等）
 ├── tests/                           GoogleTest 测试套件（61 项）
 │   ├── test_cancellation_token.cpp
 │   ├── test_result_mailbox.cpp
@@ -204,6 +215,54 @@ auto stats = app.MemoryPoolStats();
 printf("alloc=%llu, in_use=%lluB, peak=%lluB, slab_hits=%llu\n",
        stats.alloc_count, stats.bytes_in_use, stats.bytes_peak, stats.slab_hits);
 ```
+
+---
+
+## 示例：Squad Patrol（多实体巡逻仿真）
+
+`examples/squad_patrol/` 是一个完整的可运行示例，演示框架全部核心功能的协同工作。
+
+### 场景
+
+5 名 AI 士兵（Alpha Squad，EntityId 101–105）并发执行巡逻任务：
+
+```
+Fallback
+├── Sequence [威胁响应 Branch A]
+│   ├── ThreatDetectedCondition   ← ConditionBase：检查 EntityContext 私有标志
+│   └── ReportThreatAction        ← AsyncActionBase：CommandBus 派发 + TBB 等待确认
+└── Sequence [正常巡逻 Branch B]
+    ├── ScanZoneAction            ← AsyncActionBase：TBB 并行传感器扫描
+    └── PatrolMoveAction          ← AsyncActionBase：TBB 低优先级移动计算
+```
+
+每帧 5 个实体的行为树并发 tick，TBB 任务结果通过 uvw wakeup 回注。
+
+### 运行输出示例
+
+```
+[帧   25]  sim=1300ms  tick=99μs  树总数=5  唤醒=0  威胁累计=2  上报=0  巡逻=3
+  [103] ReportThreatAction › 上报威胁!
+  [CommandBus] 收到 threat_report  来源实体=103  仿真时间=0ms
+  [101] ReportThreatAction › 上报威胁!
+
+══════════════════════════════════════════════════════════
+  仿真结束
+══════════════════════════════════════════════════════════
+  累计发现威胁   : 5 次
+  累计上报指挥部 : 3 次
+  累计完成巡逻   : 9 次
+  Slab 命中率    : 56/58
+══════════════════════════════════════════════════════════
+```
+
+### 配置文件
+
+`config/simulation.json` 可在不重编译的情况下调整：
+- `scan_duration_ms`：每次传感器扫描耗时
+- `patrol_step_ms`：每步巡逻移动耗时
+- `threat_probability_pct`：发现威胁的概率（调高可观察到更多 ReportThreatAction）
+- `tick_policy`：`tick_all`（每帧 tick 全部树）或 `skip_idle`（Active Set 优化）
 
 ---
 
