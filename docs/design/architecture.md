@@ -384,6 +384,120 @@ EntityContext（实体生命周期，跨帧持久）
 
 ---
 
+### 7.4 数据传递方式选型：Blackboard vs CommandBus vs 直接调用
+
+项目中存在三种数据/消息传递机制，适用场景完全不同，选型错误会导致线程安全问题或架构耦合：
+
+| 维度 | **BT::Blackboard** | **CommandBus** | **直接调用（EntityContext API）** |
+|---|---|---|---|
+| **作用域** | 同一棵树内（单个实体） | 跨实体、跨进程、跨网络 | 单个实体内部 |
+| **通信方向** | 节点 ↔ 节点（树内数据流） | 实体 → 外部（单向命令） | 节点 → 领域状态 |
+| **类型安全** | **强类型**（模板端口） | **弱类型**（`vector<uint8_t>` payload） | **强类型**（C++ API） |
+| **解耦程度** | 数据共享，松散耦合 | 发布-订阅，完全解耦 | 直接调用，紧耦合 |
+| **线程安全** | ❌ 非线程安全（Tick 线程独占） | ✅ 线程安全（`Dispatch` 内部有锁） | ❌ 非线程安全（Tick 线程独占） |
+| **是否可跨实体** | ❌ 不能 | ✅ 可以 | ❌ 不能（只能读写本实体） |
+| **是否可跨进程** | ❌ 不能 | ✅ 可挂 `UvwUdpBusAdapter` | ❌ 不能 |
+
+#### 决策指南
+
+**场景 A：同一实体内部，节点间传递计算结果**
+→ 用 **Blackboard**（`getInput<T>()` / `setOutput<T>()`）
+
+```xml
+<!-- 示例：路径规划节点把结果写入黑板，移动节点读取 -->
+<ComputePath output_path="{path}"/>
+<FollowPath input_path="{path}"/>
+```
+
+**场景 B：节点需要保存跨帧状态（如巡逻步数、目标标志）**
+→ 用 **EntityContext 直接调用**（`SetFlag / GetFlag / SetInt / GetInt`）
+
+```cpp
+// ScanZoneAction::OnRunning
+sync_ctx->Entity().SetFlag("threat_detected", true);
+```
+
+**场景 C：编队内部多个实体共享战术状态**
+→ 用 **GroupContext 直接调用**（`SetRule / GetRule`）
+
+```cpp
+// 实体 101 发现威胁，通知同编队成员
+auto* group = sync_ctx->Group();
+if (group) group->SetRule("squad_alert", true);
+```
+
+**场景 D：实体需要通知"外部世界"发生了某件事**
+→ 用 **CommandBus**（`Dispatch(ActionCommand)`）
+
+```cpp
+// ReportThreatAction::OnStart
+ActionCommand cmd;
+cmd.source_entity = OwnerEntity();
+cmd.command_type  = "threat_report";
+cmd.payload       = encode(entity_id, position);
+sync_ctx->CommandBus().Dispatch(cmd);  // fire-and-forget
+```
+
+**场景 E：需要把本地命令发到远端机器**
+→ **CommandBus + UvwUdpBusAdapter**
+
+```cpp
+// SimHostApp 初始化时挂接
+auto cmd_bus_impl = std::static_pointer_cast<InProcessCommandBus>(command_bus_);
+cmd_bus_impl->SetBusAdapter(udp_adapter, event_loop);
+
+// BT 节点里同样的 Dispatch() 调用，自动触发 UDP 出站
+```
+
+#### 关键陷阱：不要把 CommandBus 当成 Blackboard 用
+
+**反模式**：用 Bus 在树内节点间传数据。
+
+```cpp
+// 错误：同一棵树内两个节点通过 Bus 通信
+// 节点 A
+CommandBus().Dispatch({"set_target", encode(target_id)});
+
+// 节点 B（另一个 handler）
+CommandBus().RegisterHandler("set_target", [&](auto& cmd){
+    target_id_ = decode(cmd.payload);  // 绕了一大圈
+});
+```
+
+**正解**：同一棵树内直接用 Blackboard 端口或成员变量。
+
+```cpp
+// 节点 A
+setOutput("target_id", target_id);
+
+// 节点 B
+auto target_id = getInput<EntityId>("target_id").value();
+```
+
+#### 关键陷阱：不要在 TBB Worker 里碰 Blackboard 或 EntityContext
+
+```cpp
+// 反模式：TBB worker 直接修改共享状态
+ctx->SubmitCpuJob(kNormal, [](auto token, JobResult& out) {
+    entity_ctx->SetFlag("done", true);  // ❌ 数据竞争！UB！
+});
+
+// 正解：结果通过 mailbox 带回，在 OnRunning 中写入
+ctx->SubmitCpuJob(kNormal, [](auto token, JobResult& out) {
+    bool found = compute(...);
+    out.succeeded = true;
+    out.payload   = found;   // ✅ 只写本地变量和 out
+});
+
+// OnRunning（BT Tick Domain）
+auto result = ctx_->PeekResult(job_id_);
+if (result) {
+    entity_ctx->SetFlag("done", std::any_cast<bool>(result->payload));  // ✅
+}
+```
+
+---
+
 ## 8. uvw 胶水层工作原理
 
 ### 8.1 三个独立 async_handle
@@ -477,41 +591,46 @@ void DrainAll(consumer) {
 }
 ```
 
-### 9.3 当前实现中 DrainAll 的调用缺口
+### 9.3 DrainAll 的完整 wakeup 链路（当前实现）
 
-`sim_host_app.cpp` 中的 wakeup callback 当前是空 lambda：
+`sim_host_app.cpp` 中已实现了完整的 TBB → Mailbox → uvw → BT wakeup 链路：
 
 ```cpp
-// sim_host_app.cpp:38-43
-executor->SetWakeupCallback([event_loop_ptr = event_loop.get()]() {
-    event_loop_ptr->PostToLoop([]() {
-        // 注释：实际 drain 在下一帧 TickAll 开始时执行
-        // ← 但 TickAll 里没有 DrainAll 调用！
+// sim_host_app.cpp:76-93
+auto mailbox_ptr   = executor->Mailbox_shared();
+auto bt_runtime_wk = std::weak_ptr<IBtRuntime>(bt_runtime_);
+executor->SetWakeupCallback(
+    [event_loop_ptr = event_loop.get(),
+     mailbox_ptr,
+     bt_runtime_wk]() {
+      event_loop_ptr->PostToLoop(
+          [mailbox_ptr, bt_runtime_wk]() {
+            mailbox_ptr->DrainAll([bt_runtime_wk](JobResult r) {
+              if (auto bt = bt_runtime_wk.lock()) {
+                if (r.owner_entity != kInvalidEntityId) {
+                  bt->RequestWakeup(r.owner_entity);
+                }
+              }
+            });
+          });
     });
-});
 ```
 
-**实际影响**：
-- TBB job 完成 → `mailbox.Post(result)` → 结果进入 `incoming_`
-- `notify_cb` 被触发，但只是投递了一个空操作到 uvw loop
-- `incoming_` 里的结果**永远不会被 DrainAll 移入 ready_**
-- 节点 `PeekResult()` 查询 `ready_` → 永远得到 nullopt
-- 节点永远 RUNNING，直到超时
-
-**完整的 wakeup 通知链应为**：
+**执行路径**：
 
 ```
 TBB Post(result)
   → notify_cb()
-    → event_loop->PostToLoop([mailbox, bt_runtime, entity_id]{
+    → event_loop->PostToLoop([mailbox, bt_runtime]{
           mailbox->DrainAll([bt_runtime](JobResult r) {
-              bt_runtime->RequestWakeup(entity_id_from_result);
+              bt_runtime->RequestWakeup(r.owner_entity);
           });
       })
-      → uvw loop 线程执行 DrainAll，结果进入 ready_，触发 wakeup
+      → uvw loop 线程执行 DrainAll，结果从 incoming_ 移入 ready_
+      → 逐条 RequestWakeup(entity_id)，加入下一帧 Phase 1 的 wakeup_queue_
 ```
 
-这是目前需要接入的**关键缺失链路**（Phase 1 路线图的核心 TODO）。
+> 旧版文档曾记录此处为"缺失链路"，该问题已在 Phase 2 修复。
 
 ---
 
@@ -822,16 +941,17 @@ if (result) {
 
 ---
 
-### ❌ 误区 4：uvw 是用来做网络 I/O 的
+### ❌ 误区 4：uvw 只是用来做定时器和唤醒的
 
-**错误理解**：uvw/libuv 是 node.js 同款事件循环，项目用它做 TCP/UDP 通信。
+**错误理解**：uvw/libuv 在项目里只做定时器和跨线程唤醒，不做网络 I/O。
 
 **正确理解**：
-- 当前项目用 uvw **只做两件事**：
+- 当前项目用 uvw **做三件事**：
   1. 定时器（`StartOneShotTimer` → 超时机制）
   2. 跨线程信号（`async_handle.send()` → TBB 完成后唤醒 BT）
-- 网络 I/O（`BusAdapter`）是 Phase 3 路线图的内容，当前未实现
-- `PostToLoop` 是跨线程安全投递 callback 的通用机制，是 uvw 在项目里最核心的使用方式
+  3. **网络 I/O（`UvwUdpBusAdapter` → UDP 总线出站/入站）**
+- `UvwUdpBusAdapter` 已实现并通过测试（`tests/test_bus_adapter.cpp`），支持 topic 订阅/发布、自定义二进制帧格式
+- `PostToLoop` 是跨线程安全投递 callback 的通用机制，所有 uvw handle 操作（create/start/stop/close）都必须在 loop 线程执行
 
 ---
 
@@ -877,6 +997,58 @@ void DefaultResultMailbox::Discard(uint64_t job_id) {
 - 实体的下次 tick 要等到**下一帧 `TickAll` 的 Phase 1**
 - 最坏情况：TBB job 完成时主线程刚刚结束 Phase 1，那么要等整整一帧（50ms）才能处理结果
 - 这是设计上的权衡：保证 BT 执行在单线程，代价是最多一帧的额外延迟
+
+---
+
+### ❌ 误区 8：混淆 Blackboard、CommandBus 和直接调用的使用场景
+
+**错误理解**：三种机制可以互换，想怎么传数据都行。
+
+**正确理解**：
+
+| 你面临的情况 | 应该用的机制 | 原因 |
+|---|---|---|
+| 节点 A 把坐标传给节点 B（同一实体） | **Blackboard** | 树内数据流，强类型，零开销 |
+| 保存"本实体巡逻到第几步" | **EntityContext** | 跨帧持久，key-value 查询 |
+| 编队成员间共享"是否警报" | **GroupContext** | 组内共享，tick 串行化无需锁 |
+| 实体想通知指挥中心"发现敌人" | **CommandBus** | 解耦，不关心谁接收，可跨网络 |
+| 每帧 check"有没有敌人" | **EntityContext** 读本地标志 | 微秒级，不能发 RPC 或查 Bus |
+
+**代码层面的区别**：
+
+```cpp
+// ── Blackboard：树内节点间 ──
+setOutput("target_pos", Vec3{x, y, z});           // 写
+auto pos = getInput<Vec3>("target_pos").value();  // 读
+
+// ── EntityContext：本实体跨帧状态 ──
+sync_ctx->Entity().SetInt("patrol_step", 5);
+int step = sync_ctx->Entity().GetInt("patrol_step", 0);
+
+// ── GroupContext：编队共享状态 ──
+sync_ctx->Group()->SetRule("alert", true);
+
+// ── CommandBus：对外通知/命令 ──
+ActionCommand cmd;
+cmd.command_type = "threat_report";
+cmd.payload = encode(threat_info);
+sync_ctx->CommandBus().Dispatch(cmd);  // 不返回值，不阻塞
+```
+
+**致命错误示例**：
+
+```cpp
+// 错误 1：用 CommandBus 做树内数据传递
+// 同一棵树里，节点 A 发 Bus，节点 B 注册 handler 接收
+// → 多了一次序列化/反序列化，失去了类型安全，还引入了锁竞争
+
+// 错误 2：在 Condition 里每帧 Dispatch Bus 查询远端状态
+// → Condition 每帧被 tick，Bus Dispatch 有 mutex 开销，且是单向的
+// → 正解：后台服务定期拉状态到 EntityContext，Condition 只读本地缓存
+
+// 错误 3：在 TBB Worker 里直接读写 EntityContext
+// → 非线程安全，数据竞争。见误区 3。
+```
 
 ---
 
