@@ -6,13 +6,18 @@
 #
 # 设计原则：
 #   - 只有 -Wall / -W4 等基础诊断标志才全局设置（apply_compile_options）
-#   - -Werror / -Wpedantic / -Wextra 等严格标志放入 simbehavior_compile_warnings
+#   - -Werror / /WX / -Wpedantic / -Wextra 等严格标志放入
+#     simbehavior_compile_warnings
 #     INTERFACE 库，由我们自己的目标主动 link_libraries，不污染三方依赖
 # ─────────────────────────────────────────────────────────────────────────────
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(SIMBEHAVIOR_WARNINGS_AS_ERRORS
+  "Treat warnings as errors for sim-behavior targets"
+  OFF)
 
 # ── linb::any 类型比较修复 ─────────────────────────────────────────────────────
 # macOS + -fvisibility=hidden 下，std::type_info::operator== 对 hidden visibility
@@ -55,14 +60,17 @@ add_library(simbehavior_compile_warnings INTERFACE)
 if(MSVC)
   target_compile_options(simbehavior_compile_warnings INTERFACE
     /W4          # 较高警告级别
-    /WX          # 警告视为错误
     /permissive- # 严格标准一致性
   )
+  if(SIMBEHAVIOR_WARNINGS_AS_ERRORS)
+    target_compile_options(simbehavior_compile_warnings INTERFACE
+      /WX        # 警告视为错误
+    )
+  endif()
 else()
   target_compile_options(simbehavior_compile_warnings INTERFACE
     -Wextra
     -Wpedantic
-    -Werror
     -Wno-unused-parameter         # BT 节点经常有未使用参数
     -fvisibility=hidden           # 隐藏非 API 符号（仅本模块生效，不污染三方库）
     # 注意：故意不加 -fvisibility-inlines-hidden。
@@ -72,6 +80,11 @@ else()
     # 在另一个 TU（condition_base/async_action_base）取出时，linb::any 的类型比较
     # 因 vtable 副本不同而失败，上下文始终为 null，所有条件节点返回 FAILURE。
   )
+  if(SIMBEHAVIOR_WARNINGS_AS_ERRORS)
+    target_compile_options(simbehavior_compile_warnings INTERFACE
+      -Werror
+    )
+  endif()
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(simbehavior_compile_warnings INTERFACE
       -Wno-gnu-zero-variadic-macro-arguments

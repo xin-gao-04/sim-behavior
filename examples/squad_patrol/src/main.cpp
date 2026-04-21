@@ -31,6 +31,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 // ── sim_bt 宿主层（内部头，通过 src/ include 路径访问）──────────────────────
 #include "sim_host/sim_host_app.hpp"
 
@@ -50,6 +57,13 @@ static std::atomic<bool> g_stop_requested{false};
 
 static void HandleSignal(int /*signum*/) {
     g_stop_requested.store(true);
+}
+
+static void ConfigureConsoleForUtf8() {
+#if defined(_WIN32)
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +143,8 @@ static void PrintFinalSummary(int frames_run,
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
+    ConfigureConsoleForUtf8();
+
     // ── 0. 信号处理：Ctrl+C 优雅退出 ─────────────────────────────────────────
     std::signal(SIGINT,  HandleSignal);
     std::signal(SIGTERM, HandleSignal);

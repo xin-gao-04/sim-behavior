@@ -58,4 +58,8 @@ class IGroupContext {
 
 using GroupContextPtr = std::shared_ptr<IGroupContext>;
 
+// GroupContext 默认实现的工厂函数。
+// 返回接口类型，调用方无需依赖具体实现类。
+GroupContextPtr CreateGroupContext(GroupId id);
+
 }  // namespace sim_bt

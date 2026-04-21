@@ -46,13 +46,13 @@ git submodule update --init --recursive
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j$(nproc)
 
-# 3. 运行测试（61 项，全绿）
-./build/tests/sim_behavior_tests
+# 3. 运行测试（产物统一输出到 build/<config>/）
+./build/RelWithDebInfo/sim_behavior_tests
 
 # 4. 运行示例（可选）
 cmake -B build -DSIMBEHAVIOR_BUILD_EXAMPLES=ON
 cmake --build build --target squad_patrol_example
-cd build/examples/squad_patrol && ./squad_patrol_example
+cd build/RelWithDebInfo && ./squad_patrol_example
 ```
 
 > **依赖解析策略**（`cmake/Dependencies.cmake`）：
@@ -96,6 +96,7 @@ git commit -m "vendor: update third-party zips"
 | `SIMBEHAVIOR_BUILD_TESTS` | ON | 构建 GoogleTest 单元测试 |
 | `SIMBEHAVIOR_BUILD_SIM_HOST` | ON | 构建 sim_host 可执行文件 |
 | `SIMBEHAVIOR_BUILD_EXAMPLES` | OFF | 构建示例项目（如 squad_patrol） |
+| `SIMBEHAVIOR_WARNINGS_AS_ERRORS` | OFF | 是否将 sim-behavior 自身代码的警告视为错误 |
 | `SIMBEHAVIOR_ENABLE_ASAN` | OFF | AddressSanitizer（仅 GCC/Clang） |
 
 ---

@@ -9,6 +9,7 @@ option(SIMBEHAVIOR_BUILD_EXAMPLES  "Build example projects"   OFF)
 
 # ── 编译标志 ──────────────────────────────────────────────────────────────────
 include(cmake/CompilerFlags.cmake)
+include(cmake/OutputDirectories.cmake)
 
 # ── 禁止三方子项目自动构建其测试（TBB / libuv / BTCPP 等均遵守 BUILD_TESTING）
 # 我们通过 SIMBEHAVIOR_BUILD_TESTS 控制自己的测试，独立于此变量

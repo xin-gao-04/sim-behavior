@@ -145,7 +145,6 @@ TEST_F(GroupContextTest, NoGroupReturnsNullptr) {
 TEST_F(GroupContextTest, SharedGroupContextPropagatesState) {
   // 模拟 AssignGroup：创建 GroupContext 并注入两个 SyncNodeContext
   // (工厂函数在 group_context_impl.cpp 中定义，通过链接器链接)
-  extern std::shared_ptr<IGroupContext> CreateGroupContext(GroupId);
   auto group = CreateGroupContext(GroupId(1));
   group->AddMember(kEntityA);
   group->AddMember(kEntityB);
@@ -169,7 +168,6 @@ TEST_F(GroupContextTest, SharedGroupContextPropagatesState) {
 // 测试 3：规则标志共享
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(GroupContextTest, SharedRuleFlagIsVisibleAcrossMembers) {
-  extern std::shared_ptr<IGroupContext> CreateGroupContext(GroupId);
   auto group = CreateGroupContext(GroupId(2));
   group->AddMember(kEntityA);
   group->AddMember(kEntityB);
@@ -192,7 +190,6 @@ TEST_F(GroupContextTest, SharedRuleFlagIsVisibleAcrossMembers) {
 // 测试 4：SetGroupContext(nullptr) 后 Group() 回到 nullptr
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(GroupContextTest, DisbandGroupClearsGroupPointer) {
-  extern std::shared_ptr<IGroupContext> CreateGroupContext(GroupId);
   auto group = CreateGroupContext(GroupId(3));
   group->AddMember(kEntityA);
   sync_a_->SetGroupContext(group);
@@ -209,7 +206,6 @@ TEST_F(GroupContextTest, DisbandGroupClearsGroupPointer) {
 // 测试 5：IsMember 与成员列表一致性
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(GroupContextTest, MembershipQueriesAreConsistent) {
-  extern std::shared_ptr<IGroupContext> CreateGroupContext(GroupId);
   auto group = CreateGroupContext(GroupId(4));
   group->AddMember(kEntityA);
   sync_a_->SetGroupContext(group);

@@ -190,6 +190,12 @@ if(NOT TARGET TBB::tbb)
     "[sim-behavior] TBB::tbb not found after oneTBB setup.\n"
     "  请将 third_party/oneTBB.zip 加入仓库，或确保网络可访问 GitHub。")
 endif()
+
+foreach(_tbb_target tbb tbbmalloc tbbmalloc_proxy tbbbind tbbbind_2_0 tbbbind_2_5)
+  simbehavior_set_target_output_directories("${_tbb_target}")
+endforeach()
+unset(_tbb_target)
+
 message(STATUS "[sim-behavior] TBB::tbb ready")
 
 

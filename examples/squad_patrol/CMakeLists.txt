@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.22)
 #
 #   cmake -S /path/to/sim-behavior -B build -DSIMBEHAVIOR_BUILD_EXAMPLES=ON
 #   cmake --build build --target squad_patrol_example -j$(nproc)
-#   cd build/examples/squad_patrol && ./squad_patrol_example
+#   cd build/Release && ./squad_patrol_example
 #
 # 也可以用独立构建（需要 sim-behavior 已经 build 完成）：
 #   cmake -S . -B build_standalone
@@ -78,5 +78,5 @@ add_custom_command(TARGET squad_patrol_example POST_BUILD
 
 # ── 提示信息 ──────────────────────────────────────────────────────────────────
 message(STATUS "[sim-behavior] 示例目标已添加: squad_patrol_example")
-message(STATUS "  运行方式: cd <build>/examples/squad_patrol && ./squad_patrol_example")
+message(STATUS "  运行方式: cd <build>/<config> && ./squad_patrol_example")
 message(STATUS "  配置文件: config/simulation.json (复制到构建目录后可直接编辑)")

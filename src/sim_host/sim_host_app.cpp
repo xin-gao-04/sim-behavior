@@ -22,7 +22,6 @@ namespace sim_bt {
 // 工厂函数声明（defined in their respective .cpp files）
 std::shared_ptr<IBtRuntime>     CreateBtRuntime();
 std::shared_ptr<ICommandBus>    CreateInProcessCommandBus();
-std::shared_ptr<IGroupContext>  CreateGroupContext(GroupId id);
 
 SimHostApp::SimHostApp() {
   // 尽早初始化进程级 logger，使后续所有 SIMBT_LOG_* 调用立即生效
